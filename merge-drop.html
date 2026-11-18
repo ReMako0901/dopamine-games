@@ -1,0 +1,391 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+  <title>MERGE DROP</title>
+  <style>
+    html, body {
+      margin: 0;
+      height: 100%;
+      background: #0a0a10;
+      overflow: hidden;
+      overscroll-behavior: none;
+      touch-action: none;
+      -webkit-user-select: none;
+      user-select: none;
+      -webkit-tap-highlight-color: transparent;
+    }
+    canvas {
+      display: block;
+      width: 100vw;
+      height: 100dvh;
+      background: #0a0a10;
+    }
+  </style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<script>
+"use strict";
+
+const canvas = document.getElementById("game");
+const context = canvas.getContext("2d", { alpha: false });
+
+const MAX_BALLS = 60;
+const DOUBLE_TAP_WINDOW = 0.32;
+const SPAWN_COOLDOWN = 0.08;
+const COLORS = [
+  "#2f80ed", "#00a3a3", "#27ae60", "#f2994a",
+  "#eb5757", "#9b51e0", "#d64b9a", "#b8860b"
+];
+const TEXT_COLORS = ["#ffffff", "#ffffff", "#0f1115", "#151515", "#ffffff", "#ffffff", "#ffffff", "#151515"];
+
+let width = 0;
+let height = 0;
+let boxLeft = 0;
+let boxRight = 0;
+let boxTop = 0;
+let boxBottom = 0;
+let balls = [];
+let effects = [];
+let score = 0n;
+let spawnCooldown = 0;
+let lastTapTime = -1;
+let lastFrameTime = performance.now();
+
+function formatNumber(value) {
+  return String(value).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+}
+
+function radiusForLevel(level) {
+  const base = Math.max(17, Math.min(22, width * 0.052));
+  return Math.min(base + Math.sqrt(level) * 5.6, width * 0.15, 60);
+}
+
+function colorForLevel(level) {
+  return COLORS[(level - 1) % COLORS.length];
+}
+
+function textColorForLevel(level) {
+  return TEXT_COLORS[(level - 1) % TEXT_COLORS.length];
+}
+
+function resize() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  width = Math.max(1, canvas.clientWidth || window.innerWidth);
+  height = Math.max(1, canvas.clientHeight || window.innerHeight);
+  canvas.width = Math.floor(width * dpr);
+  canvas.height = Math.floor(height * dpr);
+  context.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+  const wallInset = Math.max(22, Math.min(width * 0.08, 42));
+  boxLeft = wallInset;
+  boxRight = width - wallInset;
+  boxTop = height * 0.52;
+  boxBottom = height - Math.max(14, Math.min(28, height * 0.035));
+
+  for (const ball of balls) {
+    ball.radius = radiusForLevel(ball.level);
+    ball.x = Math.min(Math.max(ball.x, boxLeft + ball.radius), boxRight - ball.radius);
+    if (ball.y + ball.radius > boxBottom) ball.y = boxBottom - ball.radius;
+  }
+}
+
+function makeBall(x, y, value, level) {
+  return {
+    x,
+    y,
+    vx: 0,
+    vy: 0,
+    value,
+    level,
+    radius: radiusForLevel(level),
+    entered: false
+  };
+}
+
+function spawnBall(x) {
+  if (balls.length >= MAX_BALLS) removeSmallestBall();
+
+  const ball = makeBall(x, boxTop - 44, 2n, 1);
+  ball.x = Math.min(Math.max(x, boxLeft + ball.radius), boxRight - ball.radius);
+  balls.push(ball);
+}
+
+function drawScore() {
+  const text = formatNumber(score);
+  let fontSize = Math.max(62, Math.min(height * 0.14, width * 0.29));
+  context.font = `900 ${fontSize}px "Arial Black", "Helvetica Neue", sans-serif`;
+  const actualWidth = context.measureText(text).width;
+  const maxWidth = width * 0.92;
+  if (actualWidth > maxWidth) fontSize *= maxWidth / actualWidth;
+
+  context.font = `900 ${fontSize}px "Arial Black", "Helvetica Neue", sans-serif`;
+  context.textAlign = "center";
+  context.textBaseline = "middle";
+  context.fillStyle = "#ffffff";
+  context.fillText(text, width / 2, Math.max(fontSize * 0.75, height * 0.18));
+}
+
+function drawBallText(ball) {
+  const text = String(ball.value);
+  const maxRadius = ball.radius * 1.58;
+  let fontSize = Math.max(9, ball.radius * 0.94);
+  context.font = `900 ${fontSize}px "Arial Black", "Helvetica Neue", sans-serif`;
+  const actualWidth = context.measureText(text).width;
+  if (actualWidth > maxRadius) fontSize *= maxRadius / actualWidth;
+
+  context.font = `900 ${fontSize}px "Arial Black", "Helvetica Neue", sans-serif`;
+  context.textAlign = "center";
+  context.textBaseline = "middle";
+  context.fillStyle = textColorForLevel(ball.level);
+  context.fillText(text, ball.x, ball.y);
+}
+
+function addEffect(x, y, radius, color) {
+  effects.push({ x, y, radius, color, elapsed: 0, duration: 0.22 });
+}
+
+function mergeBalls(a, b) {
+  const ma = a.radius * a.radius;
+  const mb = b.radius * b.radius;
+  const totalMass = ma + mb;
+  const x = (a.x * ma + b.x * mb) / totalMass;
+  const y = (a.y * ma + b.y * mb) / totalMass;
+  const vx = (a.vx * ma + b.vx * mb) / totalMass;
+  const vy = (a.vy * ma + b.vy * mb) / totalMass;
+  const value = a.value * 2n;
+  const level = a.level + 1;
+  const entered = a.entered || b.entered;
+
+  addEffect(x, y, radiusForLevel(level) * 1.25, "#ffffff");
+  balls.splice(balls.indexOf(a), 1);
+  balls.splice(balls.indexOf(b), 1);
+
+  const merged = makeBall(x, y, value, level);
+  merged.vx = vx;
+  merged.vy = vy;
+  merged.entered = entered;
+  merged.x = Math.min(Math.max(merged.x, boxLeft + merged.radius), boxRight - merged.radius);
+  balls.push(merged);
+  score += value;
+}
+
+function applyMerges() {
+  let merges = 0;
+  while (merges < MAX_BALLS) {
+    let first = null;
+    let second = null;
+
+    outer: for (let index = 0; index < balls.length; index++) {
+      const a = balls[index];
+      for (let other = index + 1; other < balls.length; other++) {
+        const b = balls[other];
+        if (a.value !== b.value) continue;
+        const dx = b.x - a.x;
+        const dy = b.y - a.y;
+        const minimumDistance = a.radius + b.radius + 0.6;
+        if (dx * dx + dy * dy <= minimumDistance * minimumDistance) {
+          first = a;
+          second = b;
+          break outer;
+        }
+      }
+    }
+
+    if (!first || !second) break;
+    mergeBalls(first, second);
+    merges++;
+  }
+}
+
+function removeSmallestBall() {
+  if (!balls.length) return null;
+
+  let target = balls[0];
+  for (const ball of balls) {
+    if (ball.value < target.value) target = ball;
+  }
+  balls.splice(balls.indexOf(target), 1);
+  score += target.value;
+  addEffect(target.x, target.y, target.radius * 1.3, colorForLevel(target.level));
+  return target;
+}
+
+function handleOverflow() {
+  const overflowed = balls.some(ball => ball.entered && ball.y - ball.radius < boxTop + 1);
+  if (overflowed) removeSmallestBall();
+}
+
+function collideWithWalls(ball) {
+  if (ball.x - ball.radius < boxLeft) {
+    ball.x = boxLeft + ball.radius;
+    if (ball.vx < 0) ball.vx = -ball.vx * 0.35;
+  } else if (ball.x + ball.radius > boxRight) {
+    ball.x = boxRight - ball.radius;
+    if (ball.vx > 0) ball.vx = -ball.vx * 0.35;
+  }
+
+  if (ball.y + ball.radius >= boxBottom) {
+    ball.y = boxBottom - ball.radius;
+    if (ball.vy > 0) ball.vy = -ball.vy * 0.12;
+    ball.vx *= 0.88;
+    ball.entered = true;
+  }
+}
+
+function resolveCollisions() {
+  for (let iteration = 0; iteration < 3; iteration++) {
+    for (let index = 0; index < balls.length; index++) {
+      const a = balls[index];
+      for (let other = index + 1; other < balls.length; other++) {
+        const b = balls[other];
+        const dx = b.x - a.x;
+        const dy = b.y - a.y;
+        const minimumDistance = a.radius + b.radius;
+        const distanceSquared = dx * dx + dy * dy;
+        if (distanceSquared >= minimumDistance * minimumDistance) continue;
+
+        const distance = Math.sqrt(distanceSquared) || 0.001;
+        const normalX = dx / distance;
+        const normalY = dy / distance;
+        const overlap = minimumDistance - distance;
+        const ma = a.radius * a.radius;
+        const mb = b.radius * b.radius;
+        const totalMass = ma + mb;
+
+        a.x -= normalX * overlap * (mb / totalMass);
+        a.y -= normalY * overlap * (mb / totalMass);
+        b.x += normalX * overlap * (ma / totalMass);
+        b.y += normalY * overlap * (ma / totalMass);
+
+        const relativeX = b.vx - a.vx;
+        const relativeY = b.vy - a.vy;
+        const normalSpeed = relativeX * normalX + relativeY * normalY;
+        if (normalSpeed < 0) {
+          const restitution = 0.16;
+          const impulse = -(1 + restitution) * normalSpeed / (1 / ma + 1 / mb);
+          a.vx -= impulse * normalX / ma;
+          a.vy -= impulse * normalY / ma;
+          b.vx += impulse * normalX / mb;
+          b.vy += impulse * normalY / mb;
+        }
+
+        if (a.entered || b.entered) {
+          a.entered = true;
+          b.entered = true;
+        }
+      }
+    }
+
+    for (const ball of balls) collideWithWalls(ball);
+  }
+}
+
+function updatePhysics(dt) {
+  const gravity = height * 3.6;
+  for (const ball of balls) {
+    ball.vy += gravity * dt;
+    ball.vx *= 0.995;
+    ball.x += ball.vx * dt;
+    ball.y += ball.vy * dt;
+  }
+  resolveCollisions();
+  applyMerges();
+  handleOverflow();
+}
+
+function update(elapsed) {
+  spawnCooldown = Math.max(0, spawnCooldown - elapsed);
+  const stepCount = Math.max(1, Math.min(4, Math.ceil(elapsed / (1 / 120))));
+  const dt = elapsed / stepCount;
+  for (let step = 0; step < stepCount; step++) updatePhysics(dt);
+
+  for (let index = effects.length - 1; index >= 0; index--) {
+    effects[index].elapsed += elapsed;
+    if (effects[index].elapsed >= effects[index].duration) effects.splice(index, 1);
+  }
+}
+
+function drawBall(ball) {
+  context.beginPath();
+  context.arc(ball.x, ball.y, ball.radius, 0, Math.PI * 2);
+  context.fillStyle = colorForLevel(ball.level);
+  context.fill();
+  drawBallText(ball);
+}
+
+function drawBox() {
+  context.fillStyle = "#101018";
+  context.fillRect(boxLeft, boxTop, boxRight - boxLeft, boxBottom - boxTop);
+  context.fillStyle = "#2c2c3c";
+  const wallWidth = Math.max(7, width * 0.022);
+  context.fillRect(boxLeft - wallWidth, boxTop, wallWidth, boxBottom - boxTop);
+  context.fillRect(boxRight, boxTop, wallWidth, boxBottom - boxTop);
+  context.fillRect(boxLeft - wallWidth, boxBottom, boxRight - boxLeft + wallWidth * 2, wallWidth);
+}
+
+function drawEffects() {
+  for (const effect of effects) {
+    const progress = effect.elapsed / effect.duration;
+    const radius = effect.radius + effect.radius * progress * 1.5;
+    context.globalAlpha = 1 - progress;
+    context.beginPath();
+    context.arc(effect.x, effect.y, radius, 0, Math.PI * 2);
+    context.strokeStyle = effect.color;
+    context.lineWidth = 4;
+    context.stroke();
+  }
+  context.globalAlpha = 1;
+}
+
+function render() {
+  context.fillStyle = "#0a0a10";
+  context.fillRect(0, 0, width, height);
+  drawScore();
+  drawBox();
+  for (const ball of balls) drawBall(ball);
+  drawEffects();
+}
+
+function reset() {
+  balls.length = 0;
+  effects.length = 0;
+  score = 0n;
+  spawnCooldown = 0;
+}
+
+function handleTap(event) {
+  event.preventDefault();
+  const rect = canvas.getBoundingClientRect();
+  const x = (event.clientX - rect.left) * (width / Math.max(1, rect.width));
+  const now = performance.now() / 1000;
+
+  if (lastTapTime >= 0 && now - lastTapTime <= DOUBLE_TAP_WINDOW) {
+    reset();
+    lastTapTime = -1;
+    return;
+  }
+
+  lastTapTime = now;
+  if (spawnCooldown > 0) return;
+  spawnCooldown = SPAWN_COOLDOWN;
+  spawnBall(x);
+}
+
+canvas.addEventListener("pointerdown", handleTap, { passive: false });
+window.addEventListener("resize", resize);
+window.addEventListener("orientationchange", resize);
+
+resize();
+requestAnimationFrame(function frame(now) {
+  const elapsed = Math.min(0.05, (now - lastFrameTime) / 1000);
+  lastFrameTime = now;
+  update(elapsed);
+  render();
+  requestAnimationFrame(frame);
+});
+</script>
+</body>
+</html>
