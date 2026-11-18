@@ -1,0 +1,279 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+  <title>GATE RUSH</title>
+  <style>
+    html, body {
+      margin: 0;
+      height: 100%;
+      background: #0b0b12;
+      overflow: hidden;
+      overscroll-behavior: none;
+      touch-action: none;
+      -webkit-user-select: none;
+      user-select: none;
+      -webkit-tap-highlight-color: transparent;
+    }
+    canvas {
+      display: block;
+      width: 100vw;
+      height: 100dvh;
+      background: #0b0b12;
+    }
+  </style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<script>
+"use strict";
+
+const canvas = document.getElementById("game");
+const context = canvas.getContext("2d", { alpha: false });
+
+const MAX_BALLS = 1500;
+const BALL_RADIUS = 7;
+const BASE_FALL_SPEED = 255;
+const BOOST_FALL_SPEED = 650;
+const BOOST_DURATION = 3;
+const DOUBLE_TAP_WINDOW = 0.32;
+const MAX_SPAWN_RATE = 12;
+const GATE_COUNT = 3;
+
+let width = 0;
+let height = 0;
+let balls = [];
+let gates = [];
+let score = 0;
+let elapsed = 0;
+let spawnTimer = 0;
+let boostTimer = 0;
+let lastTapTime = -1;
+let lastFrameTime = 0;
+
+function formatScore(value) {
+  return String(value).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+}
+
+function resize() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  width = Math.max(1, canvas.clientWidth || window.innerWidth);
+  height = Math.max(1, canvas.clientHeight || window.innerHeight);
+  canvas.width = Math.floor(width * dpr);
+  canvas.height = Math.floor(height * dpr);
+  context.setTransform(dpr, 0, 0, dpr, 0, 0);
+  buildGates();
+}
+
+function buildGates() {
+  gates = [];
+  const gateWidth = width * 0.31;
+  const gapWidth = width * 0.16;
+  const totalWidth = gateWidth * 2 + gapWidth;
+  const amplitude = Math.max(2, (width - totalWidth) / 2);
+
+  for (let index = 0; index < GATE_COUNT; index++) {
+    gates.push({
+      y: height * (0.30 + index * 0.20),
+      width: gateWidth,
+      gap: gapWidth,
+      amplitude,
+      speed: 0.48 + index * 0.16,
+      phase: index * 1.85,
+      doubledOnLeft: index % 2 === 0
+    });
+  }
+}
+
+function getGateParts(gate) {
+  const centerX = width / 2 + Math.sin(elapsed * gate.speed + gate.phase) * gate.amplitude;
+  const left = centerX - gate.width - gate.gap / 2;
+  const right = centerX + gate.gap / 2;
+  return { left, right };
+}
+
+function spawnBall() {
+  if (balls.length >= MAX_BALLS) return;
+
+  const x = width * (0.34 + Math.random() * 0.32);
+  balls.push({
+    x,
+    y: -BALL_RADIUS,
+    vx: (Math.random() - 0.5) * 30,
+    gateMask: 0
+  });
+}
+
+function cloneBall(parent, gateIndex) {
+  if (balls.length >= MAX_BALLS) return;
+
+  const direction = parent.x < width / 2 ? -1 : 1;
+  let childX = parent.x + direction * BALL_RADIUS * 2.4;
+  if (childX < BALL_RADIUS) childX = parent.x + BALL_RADIUS * 2.4;
+  if (childX > width - BALL_RADIUS) childX = parent.x - BALL_RADIUS * 2.4;
+  childX = Math.min(Math.max(childX, BALL_RADIUS), width - BALL_RADIUS);
+
+  balls.push({
+    x: childX,
+    y: parent.y,
+    vx: parent.vx,
+    gateMask: parent.gateMask | (1 << gateIndex)
+  });
+}
+
+function processGates(ball, previousY) {
+  for (let index = 0; index < gates.length; index++) {
+    const bit = 1 << index;
+    if (ball.gateMask & bit || previousY >= gates[index].y || ball.y < gates[index].y) continue;
+
+    const gate = gates[index];
+    const parts = getGateParts(gate);
+    const doubledX = gate.doubledOnLeft ? parts.left : parts.right;
+    const zeroX = gate.doubledOnLeft ? parts.right : parts.left;
+
+    ball.gateMask |= bit;
+    if (ball.x >= doubledX && ball.x <= doubledX + gate.width) {
+      cloneBall(ball, index);
+    } else if (ball.x >= zeroX && ball.x <= zeroX + gate.width) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+function update(dt) {
+  elapsed += dt;
+  boostTimer = Math.max(0, boostTimer - dt);
+  spawnTimer -= dt;
+
+  const spawnRate = Math.min(MAX_SPAWN_RATE, 2 + elapsed / 10);
+  if (spawnTimer <= 0) {
+    spawnBall();
+    spawnTimer += 1 / spawnRate;
+    if (spawnTimer < 0) spawnTimer = 0;
+  }
+
+  const fallSpeed = boostTimer > 0 ? BOOST_FALL_SPEED : BASE_FALL_SPEED;
+
+  for (let index = balls.length - 1; index >= 0; index--) {
+    const ball = balls[index];
+    const previousY = ball.y;
+    ball.x += ball.vx * dt;
+    ball.y += fallSpeed * dt;
+
+    if (ball.x < BALL_RADIUS) {
+      ball.x = BALL_RADIUS;
+      ball.vx = Math.abs(ball.vx);
+    } else if (ball.x > width - BALL_RADIUS) {
+      ball.x = width - BALL_RADIUS;
+      ball.vx = -Math.abs(ball.vx);
+    }
+
+    if (!processGates(ball, previousY)) {
+      balls.splice(index, 1);
+      continue;
+    }
+
+    if (ball.y >= height - BALL_RADIUS) {
+      score++;
+      balls.splice(index, 1);
+    }
+  }
+}
+
+function drawScore() {
+  const text = formatScore(score);
+  const maxWidth = width - 20;
+  let fontSize = Math.max(54, Math.min(height * 0.17, 112));
+  const font = (size) => `900 ${size}px system-ui, -apple-system, "Segoe UI", sans-serif`;
+
+  context.textAlign = "center";
+  context.textBaseline = "middle";
+  context.font = font(fontSize);
+  while (fontSize > 16 && context.measureText(text).width > maxWidth) {
+    fontSize -= 2;
+    context.font = font(fontSize);
+  }
+
+  context.fillStyle = "#f2f6ff";
+  context.fillText(text, width / 2, Math.max(48, height * 0.08));
+}
+
+function drawGates() {
+  for (const gate of gates) {
+    const parts = getGateParts(gate);
+    const doubledX = gate.doubledOnLeft ? parts.left : parts.right;
+    const zeroX = gate.doubledOnLeft ? parts.right : parts.left;
+    const thickness = Math.max(10, Math.min(width * 0.035, 15));
+
+    context.fillStyle = "#31c48d";
+    context.fillRect(doubledX, gate.y - thickness / 2, gate.width, thickness);
+    context.fillStyle = "#e93f5b";
+    context.fillRect(zeroX, gate.y - thickness / 2, gate.width, thickness);
+
+    context.fillStyle = "#06130d";
+    context.font = `900 ${Math.max(11, Math.min(width * 0.045, 18))}px system-ui, sans-serif`;
+    context.textAlign = "center";
+    context.textBaseline = "middle";
+    context.fillText("×2", doubledX + gate.width / 2, gate.y);
+    context.fillStyle = "#1f0508";
+    context.fillText("×0", zeroX + gate.width / 2, gate.y);
+  }
+}
+
+function drawBalls() {
+  context.fillStyle = "#5ee7ff";
+  context.beginPath();
+  for (const ball of balls) {
+    context.moveTo(ball.x + BALL_RADIUS, ball.y);
+    context.arc(ball.x, ball.y, BALL_RADIUS, 0, Math.PI * 2);
+  }
+  context.fill();
+}
+
+function draw() {
+  context.fillStyle = "#0b0b12";
+  context.fillRect(0, 0, width, height);
+  drawGates();
+  drawBalls();
+  drawScore();
+}
+
+function frame(timestamp) {
+  if (!lastFrameTime) lastFrameTime = timestamp;
+  const dt = Math.min((timestamp - lastFrameTime) / 1000, 1 / 30);
+  lastFrameTime = timestamp;
+  update(dt);
+  draw();
+  requestAnimationFrame(frame);
+}
+
+canvas.addEventListener("pointerdown", (event) => {
+  event.preventDefault();
+  const now = performance.now() / 1000;
+
+  if (lastTapTime >= 0 && now - lastTapTime <= DOUBLE_TAP_WINDOW) {
+    balls.length = 0;
+    score = 0;
+    elapsed = 0;
+    spawnTimer = 0;
+    boostTimer = 0;
+    lastTapTime = -1;
+    return;
+  }
+
+  lastTapTime = now;
+  boostTimer = BOOST_DURATION;
+}, { passive: false });
+
+window.addEventListener("resize", resize);
+window.addEventListener("orientationchange", () => setTimeout(resize, 80));
+document.addEventListener("contextmenu", event => event.preventDefault());
+
+resize();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
