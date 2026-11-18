@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+  <title>滝壺</title>
+  <style>
+    html, body { margin: 0; width: 100%; height: 100%; background: #04070c; overflow: hidden; touch-action: none; user-select: none; -webkit-user-select: none; -webkit-tap-highlight-color: transparent; }
+    canvas { display: block; width: 100vw; height: 100vh; height: 100dvh; background: #04070c; }
+  </style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<script>
+"use strict";
+
+const canvas = document.getElementById("game");
+const context = canvas.getContext("2d", { alpha: false });
+const MAX_BALLS = 90;
+const DOUBLE_TAP_WINDOW = 320;
+
+let width = 1;
+let height = 1;
+let shelves = [];
+let balls = [];
+let score = 0;
+let spawnTimer = 0;
+let lastTapTime = -DOUBLE_TAP_WINDOW;
+let lastFrameTime = 0;
+
+function formatScore(value) {
+  return value.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+}
+
+function buildShelves() {
+  shelves = [];
+  const count = 5;
+  for (let index = 0; index < count; index++) {
+    const left = index % 2 === 0;
+    shelves.push({
+      x: left ? 0 : width * 0.42,
+      y: height * (0.25 + index * 0.1),
+      width: left ? width * 0.58 : width * 0.58,
+      flash: 0
+    });
+  }
+}
+
+function createBall() {
+  return {
+    x: width * (0.1 + Math.random() * 0.8),
+    y: height * 0.05,
+    vy: 90,
+    vx: 0,
+    shelf: 0,
+    value: 1,
+    state: "fall"
+  };
+}
+
+function reset() {
+  balls = [];
+  score = 0;
+  spawnTimer = 0;
+  buildShelves();
+  for (let index = 0; index < 4; index++) balls.push(createBall());
+}
+
+function resize() {
+  const pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
+  width = Math.max(1, canvas.clientWidth || window.innerWidth);
+  height = Math.max(1, canvas.clientHeight || window.innerHeight);
+  canvas.width = Math.floor(width * pixelRatio);
+  canvas.height = Math.floor(height * pixelRatio);
+  context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
+  buildShelves();
+}
+
+function update(delta) {
+  spawnTimer -= delta;
+  if (spawnTimer <= 0 && balls.length < MAX_BALLS) {
+    balls.push(createBall());
+    spawnTimer = 0.35;
+  }
+
+  for (const ball of balls) {
+    if (ball.state === "fall") {
+      ball.y += ball.vy * delta;
+      ball.vy += 180 * delta;
+      const shelf = shelves[ball.shelf];
+      if (ball.y >= shelf.y) {
+        ball.y = shelf.y;
+        ball.value = Math.min(Number.MAX_SAFE_INTEGER, ball.value + 1);
+        score = Math.min(Number.MAX_SAFE_INTEGER, score + ball.value);
+        ball.state = "slide";
+        ball.vx = (shelf.x === 0 ? 90 : -90) * (0.8 + Math.random() * 0.4);
+        shelf.flash = 0.14;
+      }
+    } else if (ball.state === "slide") {
+      ball.x += ball.vx * delta;
+      const shelf = shelves[ball.shelf];
+      if (ball.x < shelf.x - 4 || ball.x > shelf.x + shelf.width + 4) {
+        ball.shelf++;
+        ball.state = "fall";
+        ball.vy = 50;
+      }
+    } else {
+      ball.y += ball.vy * delta;
+      ball.vy += 180 * delta;
+      if (ball.y >= height * 0.78) {
+        ball.remove = true;
+      }
+    }
+  }
+  balls = balls.filter((ball) => !ball.remove);
+  for (const shelf of shelves) shelf.flash = Math.max(0, shelf.flash - delta);
+}
+
+function drawNumber(value) {
+  const text = formatScore(value);
+  let size = Math.min(width * 0.26, height * 0.19);
+  const maxWidth = width * 0.9;
+  do {
+    context.font = `900 ${size}px "Helvetica Neue", Arial, sans-serif`;
+    if (context.measureText(text).width <= maxWidth) break;
+    size *= 0.88;
+  } while (size > 9);
+  context.textAlign = "center";
+  context.textBaseline = "middle";
+  context.fillStyle = "#eaf5ff";
+  context.fillText(text, width / 2, height * 0.48);
+}
+
+function frame(now) {
+  if (!lastFrameTime) lastFrameTime = now;
+  const delta = Math.min((now - lastFrameTime) / 1000, 0.035);
+  lastFrameTime = now;
+  update(delta);
+
+  context.fillStyle = "#04070c";
+  context.fillRect(0, 0, width, height);
+  context.lineWidth = 8;
+  for (const shelf of shelves) {
+    context.strokeStyle = shelf.flash > 0 ? "#ffffff" : "#4e6a88";
+    context.beginPath();
+    context.moveTo(shelf.x, shelf.y);
+    context.lineTo(shelf.x + shelf.width, shelf.y);
+    context.stroke();
+  }
+
+  const potTop = height * 0.78;
+  const potBottom = height * 0.9;
+  const potLeft = width * 0.19;
+  const potRight = width * 0.81;
+  context.fillStyle = "#52708f";
+  context.beginPath();
+  context.moveTo(potLeft, potTop);
+  context.lineTo(potLeft + 12, potBottom);
+  context.lineTo(potRight - 12, potBottom);
+  context.lineTo(potRight, potTop);
+  context.closePath();
+  context.fill();
+  const level = Math.min(1, Math.log10(score + 1) / 7);
+  const waterTop = potBottom - (potBottom - potTop - 12) * level;
+  context.fillStyle = "#78c8ff";
+  context.fillRect(potLeft + 12, waterTop, potRight - potLeft - 24, potBottom - waterTop);
+
+  context.fillStyle = "#ffe780";
+  for (const ball of balls) {
+    context.beginPath();
+    context.arc(ball.x, ball.y, 5, 0, Math.PI * 2);
+    context.fill();
+  }
+  drawNumber(score);
+  requestAnimationFrame(frame);
+}
+
+canvas.addEventListener("pointerdown", (event) => {
+  event.preventDefault();
+  const now = performance.now();
+  if (now - lastTapTime < DOUBLE_TAP_WINDOW) {
+    reset();
+    lastTapTime = -DOUBLE_TAP_WINDOW;
+  } else {
+    lastTapTime = now;
+    if (balls.length < MAX_BALLS) balls.push(createBall());
+  }
+}, { passive: false });
+
+window.addEventListener("resize", resize);
+window.addEventListener("orientationchange", resize);
+resize();
+reset();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

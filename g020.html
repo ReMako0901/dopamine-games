@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+  <title>タップ工場</title>
+  <style>
+    html, body { margin: 0; width: 100%; height: 100%; background: #05070d; overflow: hidden; touch-action: none; user-select: none; -webkit-user-select: none; -webkit-tap-highlight-color: transparent; }
+    canvas { display: block; width: 100vw; height: 100vh; height: 100dvh; background: #05070d; }
+  </style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<script>
+"use strict";
+
+const canvas = document.getElementById("game");
+const context = canvas.getContext("2d", { alpha: false });
+const DOUBLE_TAP_WINDOW = 320;
+const HOLD_INTERVAL = 55;
+const MAX_SCORE = Number.MAX_SAFE_INTEGER;
+
+let width = 1;
+let height = 1;
+let scoreFloat = 0;
+let production = 0.5;
+let accumulator = 0;
+let lastTapTime = -DOUBLE_TAP_WINDOW;
+let holdTimer = 0;
+let pointerHeld = false;
+let lastFrameTime = 0;
+
+function formatScore(value) {
+  return value.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+}
+
+function reset() {
+  scoreFloat = 0;
+  production = 0.5;
+  accumulator = 0;
+  pointerHeld = false;
+}
+
+function resize() {
+  const pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
+  width = Math.max(1, canvas.clientWidth || window.innerWidth);
+  height = Math.max(1, canvas.clientHeight || window.innerHeight);
+  canvas.width = Math.floor(width * pixelRatio);
+  canvas.height = Math.floor(height * pixelRatio);
+  context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
+}
+
+function addScore(amount) {
+  const next = scoreFloat + amount;
+  if (next > MAX_SCORE) {
+    scoreFloat = MAX_SCORE;
+    production = 0;
+    return 0;
+  }
+  scoreFloat = next;
+  return amount;
+}
+
+function tapOnce() {
+  const added = addScore(1);
+  production += added * 0.2;
+}
+
+function update(delta) {
+  if (pointerHeld) {
+    holdTimer -= delta;
+    if (holdTimer <= 0) {
+      tapOnce();
+      holdTimer = HOLD_INTERVAL / 1000;
+    }
+  }
+  accumulator += production * delta;
+  if (accumulator >= 1) {
+    const added = Math.floor(accumulator);
+    accumulator -= added;
+    production += addScore(added) * 0.12;
+  }
+}
+
+function drawNumber() {
+  const text = formatScore(BigInt(Math.floor(scoreFloat)));
+  let size = Math.min(width * 0.24, height * 0.2);
+  const maxWidth = width * 0.9;
+  do {
+    context.font = `900 ${size}px "Helvetica Neue", Arial, sans-serif`;
+    if (context.measureText(text).width <= maxWidth) break;
+    size *= 0.88;
+  } while (size > 9);
+  context.textAlign = "center";
+  context.textBaseline = "middle";
+  context.fillStyle = "#f2f7ff";
+  context.fillText(text, width / 2, height / 2);
+}
+
+function frame(now) {
+  if (!lastFrameTime) lastFrameTime = now;
+  const delta = Math.min((now - lastFrameTime) / 1000, 0.035);
+  lastFrameTime = now;
+  update(delta);
+  context.fillStyle = "#05070d";
+  context.fillRect(0, 0, width, height);
+  drawNumber();
+  requestAnimationFrame(frame);
+}
+
+canvas.addEventListener("pointerdown", (event) => {
+  event.preventDefault();
+  const now = performance.now();
+  if (now - lastTapTime < DOUBLE_TAP_WINDOW) {
+    reset();
+    lastTapTime = -DOUBLE_TAP_WINDOW;
+  } else {
+    lastTapTime = now;
+    pointerHeld = true;
+    holdTimer = HOLD_INTERVAL / 1000;
+    tapOnce();
+  }
+}, { passive: false });
+
+window.addEventListener("pointerup", () => {
+  pointerHeld = false;
+});
+window.addEventListener("pointercancel", () => {
+  pointerHeld = false;
+});
+
+window.addEventListener("resize", resize);
+window.addEventListener("orientationchange", resize);
+resize();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

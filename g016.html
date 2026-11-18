@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+  <title>振り子分裂</title>
+  <style>
+    html, body { margin: 0; width: 100%; height: 100%; background: #05070d; overflow: hidden; touch-action: none; user-select: none; -webkit-user-select: none; -webkit-tap-highlight-color: transparent; }
+    canvas { display: block; width: 100vw; height: 100vh; height: 100dvh; background: #05070d; }
+  </style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<script>
+"use strict";
+
+const canvas = document.getElementById("game");
+const context = canvas.getContext("2d", { alpha: false });
+const MAX_BALLS = 320;
+const DOUBLE_TAP_WINDOW = 320;
+
+let width = 1;
+let height = 1;
+let balls = [];
+let lastTapTime = -DOUBLE_TAP_WINDOW;
+let lastFrameTime = 0;
+let leftFlash = 0;
+let rightFlash = 0;
+
+function formatScore(value) {
+  return value.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+}
+
+function createBall(seed) {
+  const length = height * (0.28 + ((seed * 0.137) % 0.24));
+  const amplitude = 0.76 + ((seed * 0.071) % 0.22);
+  return {
+    pivotX: width * (0.28 + ((seed * 0.061) % 0.44)),
+    pivotY: height * 0.08,
+    length,
+    angle: -amplitude,
+    direction: 1,
+    speed: 1.25 + ((seed * 0.031) % 0.45),
+    amplitude,
+    color: ["#ffe066", "#78c2ff", "#7ce8b5"][seed % 3]
+  };
+}
+
+function reset() {
+  balls = [];
+  for (let index = 0; index < 5; index++) balls.push(createBall(index + 3));
+  leftFlash = 0;
+  rightFlash = 0;
+}
+
+function resize() {
+  const pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
+  width = Math.max(1, canvas.clientWidth || window.innerWidth);
+  height = Math.max(1, canvas.clientHeight || window.innerHeight);
+  canvas.width = Math.floor(width * pixelRatio);
+  canvas.height = Math.floor(height * pixelRatio);
+  context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
+  reset();
+}
+
+function splitAt(side) {
+  if (balls.length >= MAX_BALLS) return;
+  const seed = (Date.now() + balls.length * 37) % 1000;
+  const child = createBall(seed);
+  child.pivotX = width * (side < 0 ? 0.3 : 0.7) + (Math.random() - 0.5) * width * 0.16;
+  child.angle = side < 0 ? child.amplitude : -child.amplitude;
+  child.direction = side < 0 ? -1 : 1;
+  balls.push(child);
+  if (side < 0) leftFlash = 0.16;
+  else rightFlash = 0.16;
+}
+
+function update(delta) {
+  for (const ball of balls) {
+    ball.angle += ball.direction * ball.speed * delta;
+    if (ball.angle >= ball.amplitude) {
+      ball.angle = ball.amplitude;
+      ball.direction = -1;
+      splitAt(1);
+    } else if (ball.angle <= -ball.amplitude) {
+      ball.angle = -ball.amplitude;
+      ball.direction = 1;
+      splitAt(-1);
+    }
+  }
+  leftFlash = Math.max(0, leftFlash - delta);
+  rightFlash = Math.max(0, rightFlash - delta);
+}
+
+function drawNumber(value) {
+  const text = formatScore(balls.length);
+  let size = Math.min(width * 0.26, height * 0.2);
+  const maxWidth = width * 0.9;
+  do {
+    context.font = `900 ${size}px "Helvetica Neue", Arial, sans-serif`;
+    if (context.measureText(text).width <= maxWidth) break;
+    size *= 0.88;
+  } while (size > 9);
+  context.textAlign = "center";
+  context.textBaseline = "middle";
+  context.fillStyle = "#eef4ff";
+  context.fillText(text, width / 2, height * 0.52);
+}
+
+function frame(now) {
+  if (!lastFrameTime) lastFrameTime = now;
+  const delta = Math.min((now - lastFrameTime) / 1000, 0.035);
+  lastFrameTime = now;
+  update(delta);
+
+  context.fillStyle = "#05070d";
+  context.fillRect(0, 0, width, height);
+  const wallX = width * 0.1;
+  context.lineWidth = 8;
+  context.strokeStyle = leftFlash > 0 ? "#ffffff" : "#496080";
+  context.beginPath();
+  context.moveTo(wallX, height * 0.12);
+  context.lineTo(wallX, height * 0.88);
+  context.stroke();
+  context.strokeStyle = rightFlash > 0 ? "#ffffff" : "#496080";
+  context.beginPath();
+  context.moveTo(width - wallX, height * 0.12);
+  context.lineTo(width - wallX, height * 0.88);
+  context.stroke();
+
+  context.lineWidth = 2;
+  context.strokeStyle = "rgba(129,158,199,0.45)";
+  for (const ball of balls) {
+    const x = ball.pivotX + Math.sin(ball.angle) * ball.length;
+    const y = ball.pivotY + Math.cos(ball.angle) * ball.length;
+    context.beginPath();
+    context.moveTo(ball.pivotX, ball.pivotY);
+    context.lineTo(x, y);
+    context.stroke();
+    context.beginPath();
+    context.arc(x, y, 7, 0, Math.PI * 2);
+    context.fillStyle = ball.color;
+    context.fill();
+  }
+  drawNumber(balls.length);
+  requestAnimationFrame(frame);
+}
+
+canvas.addEventListener("pointerdown", (event) => {
+  event.preventDefault();
+  const now = performance.now();
+  if (now - lastTapTime < DOUBLE_TAP_WINDOW) {
+    reset();
+    lastTapTime = -DOUBLE_TAP_WINDOW;
+  } else {
+    lastTapTime = now;
+    if (balls.length < MAX_BALLS) balls.push(createBall(Math.floor(Math.random() * 1000)));
+  }
+}, { passive: false });
+
+window.addEventListener("resize", resize);
+window.addEventListener("orientationchange", resize);
+resize();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
