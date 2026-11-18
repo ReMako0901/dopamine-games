@@ -1,7 +1,9 @@
 #!/bin/bash
 # 100本量産バッチ：5本ずつGLMで生成→メニュー更新→commit+push。週次クォータが尽きたら止まる。
 cd ~/workspace/dopamine-games || exit 1
-for b in $(seq -w 1 20); do
+START=${1:-1}
+END=${2:-20}
+for b in $(seq -w $START $END); do
   # 週次使用率チェック（95%以上なら停止）
   week=$(~/workspace/custom-connectors/custom.opencode-go/bin/go_usage.py 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin)['usage']['weekly']['percent'])" 2>/dev/null)
   echo "batch $b weekly usage: ${week:-unknown}%"
