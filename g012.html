@@ -3,10 +3,10 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
-  <title>連鎖爆発2</title>
+  <title>自動ピンボール</title>
   <style>
-    html, body { margin: 0; height: 100%; background: #0a0c12; overflow: hidden; overscroll-behavior: none; touch-action: none; user-select: none; -webkit-user-select: none; -webkit-tap-highlight-color: transparent; }
-    canvas { display: block; width: 100vw; height: 100vh; height: 100dvh; background: #0a0c12; }
+    html, body { margin: 0; width: 100%; height: 100%; background: #05070c; overflow: hidden; touch-action: none; user-select: none; -webkit-user-select: none; -webkit-tap-highlight-color: transparent; }
+    canvas { display: block; width: 100vw; height: 100vh; height: 100dvh; background: #05070c; }
   </style>
 </head>
 <body>
@@ -16,268 +16,223 @@
 
 const canvas = document.getElementById("game");
 const context = canvas.getContext("2d", { alpha: false });
-const BALL_COUNT = 60;
-const BALL_RADIUS = 13;
-const GRAVITY = 16;
-const SPEED = 52;
-const RESTITUTION = 0.88;
-const BOUNCE_BOOST = 55;
-const MAX_SPEED = 680;
-const EXPLOSION_RADIUS = 88;
-const SPAWN_COOLDOWN = 0.26;
-const FEVER_ENABLED = false;
-const FEVER_DURATION = 10;
-const FEVER_MIN = 12;
-const FEVER_MAX = 20;
-const SCORE_MULTIPLIER = 2;
-const CHAIN_DELAY = 0.09;
+const MAX_BALLS = 180;
+const GRAVITY = 620;
+const WALL_RESTITUTION = 0.85;
 const DOUBLE_TAP_WINDOW = 0.32;
-const TAP_SLOP = 14;
 
-let width = 0;
-let height = 0;
+let width = 1;
+let height = 1;
 let balls = [];
-let effects = [];
-let chain = null;
+let bumpers = [];
+let flippers = [];
 let score = 0;
-let spawnTimer = 0;
-let lastTapTime = -1;
+let flipPhase = 0;
 let lastFrameTime = 0;
-let feverActive = false;
-let feverTimer = 0;
-let nextFever = FEVER_MIN + Math.random() * (FEVER_MAX - FEVER_MIN);
+let lastTapTime = -1;
 
 function formatScore(value) {
-  return String(Math.floor(value)).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  return Math.floor(value).toLocaleString("en-US");
 }
 
 function createBall() {
-  const radius = BALL_RADIUS + 3;
+  score++;
   return {
-    x: radius + Math.random() * Math.max(1, width - radius * 2),
-    y: radius + Math.random() * Math.max(1, height - radius * 2),
-    vx: (Math.random() * 2 - 1) * SPEED,
-    vy: (Math.random() * 2 - 1) * SPEED,
-    alive: true
+    x: width * 0.5 + (Math.random() * 2 - 1) * width * 0.06,
+    y: -10,
+    vx: (Math.random() * 2 - 1) * 75,
+    vy: 80,
+    radius: 7,
+    hitCooldown: 0.18
   };
 }
 
 function reset() {
   balls = [];
-  effects = [];
-  chain = null;
+  bumpers = [];
+  flippers = [];
   score = 0;
-  spawnTimer = 0;
-  feverActive = false;
-  feverTimer = 0;
-  nextFever = FEVER_MIN + Math.random() * (FEVER_MAX - FEVER_MIN);
-  for (let index = 0; index < BALL_COUNT; index++) balls.push(createBall());
+  flipPhase = 0;
+  const positions = [
+    [0.24, 0.23], [0.5, 0.17], [0.76, 0.23],
+    [0.16, 0.46], [0.39, 0.38], [0.61, 0.38], [0.84, 0.46],
+    [0.26, 0.6], [0.5, 0.54], [0.74, 0.6]
+  ];
+  for (const [xRatio, yRatio] of positions) {
+    bumpers.push({ x: width * xRatio, y: height * yRatio, radius: Math.max(14, width * 0.045), flash: 0 });
+  }
+  flippers = [
+    { x: width * 0.28, y: height * 0.88, length: width * 0.24, side: -1 },
+    { x: width * 0.72, y: height * 0.88, length: width * 0.24, side: 1 }
+  ];
+  balls.push(createBall());
 }
 
 function resize() {
-  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
+  const oldWidth = width;
+  const oldHeight = height;
   width = Math.max(1, canvas.clientWidth || window.innerWidth);
   height = Math.max(1, canvas.clientHeight || window.innerHeight);
-  canvas.width = Math.floor(width * dpr);
-  canvas.height = Math.floor(height * dpr);
-  context.setTransform(dpr, 0, 0, dpr, 0, 0);
-  for (const ball of balls) {
-    ball.x = Math.min(Math.max(ball.x, BALL_RADIUS), width - BALL_RADIUS);
-    ball.y = Math.min(Math.max(ball.y, BALL_RADIUS), height - BALL_RADIUS);
-  }
+  canvas.width = Math.floor(width * pixelRatio);
+  canvas.height = Math.floor(height * pixelRatio);
+  context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
+  if (oldWidth !== width || oldHeight !== height) reset();
 }
 
-function updateBall(ball, dt) {
-  ball.vy += GRAVITY * dt;
-  ball.x += ball.vx * dt;
-  ball.y += ball.vy * dt;
+function resolveBumper(ball, bumper) {
+  const dx = ball.x - bumper.x;
+  const dy = ball.y - bumper.y;
+  const distance = Math.hypot(dx, dy);
+  const minimum = bumper.radius + ball.radius;
+  if (distance >= minimum) return;
 
-  if (ball.x < BALL_RADIUS) {
-    ball.x = BALL_RADIUS;
-    ball.vx = Math.abs(ball.vx) * RESTITUTION;
-  } else if (ball.x > width - BALL_RADIUS) {
-    ball.x = width - BALL_RADIUS;
-    ball.vx = -Math.abs(ball.vx) * RESTITUTION;
-  }
-
-  if (ball.y < BALL_RADIUS) {
-    ball.y = BALL_RADIUS;
-    ball.vy = Math.abs(ball.vy) * RESTITUTION + BOUNCE_BOOST;
-  } else if (ball.y > height - BALL_RADIUS) {
-    ball.y = height - BALL_RADIUS;
-    ball.vy = -Math.abs(ball.vy) * RESTITUTION - BOUNCE_BOOST;
-  }
-
+  const nx = dx / (distance || 1);
+  const ny = dy / (distance || 1);
+  ball.x = bumper.x + nx * minimum;
+  ball.y = bumper.y + ny * minimum;
+  const dot = ball.vx * nx + ball.vy * ny;
+  ball.vx = (ball.vx - 2 * dot * nx) * 0.88;
+  ball.vy = (ball.vy - 2 * dot * ny) * 0.88;
   const speed = Math.hypot(ball.vx, ball.vy);
-  if (speed > MAX_SPEED) {
-    ball.vx *= MAX_SPEED / speed;
-    ball.vy *= MAX_SPEED / speed;
+  const targetSpeed = 360;
+  if (speed < targetSpeed) {
+    ball.vx += nx * (targetSpeed - speed);
+    ball.vy += ny * (targetSpeed - speed);
+  }
+  bumper.flash = 0.12;
+
+  if (ball.hitCooldown <= 0 && balls.length < MAX_BALLS) {
+    ball.hitCooldown = 0.22;
+    const child = createBall();
+    child.x = ball.x;
+    child.y = ball.y;
+    child.vx = ball.vx * 0.55 + (Math.random() * 2 - 1) * 55;
+    child.vy = ball.vy * 0.55 - 80;
+    balls.push(child);
   }
 }
 
-function addEffect(x, y) {
-  effects.push({ x, y, life: 0.24, duration: 0.24, radius: BALL_RADIUS * 2.4 });
-  if (effects.length > 36) effects.shift();
-}
-
-function explodeBall(ball) {
-  ball.alive = false;
-  addEffect(ball.x, ball.y);
-}
-
-function findTapBall(x, y) {
-  for (const ball of balls) {
-    if (!ball.alive) continue;
-    if (Math.hypot(ball.x - x, ball.y - y) <= BALL_RADIUS + TAP_SLOP) return ball;
-  }
-  return null;
-}
-
-function startChain(ball) {
-  if (chain) return;
-  for (const current of balls) current.eligible = current.alive;
-  explodeBall(ball);
-  chain = {
-    count: 1,
-    depth: 1,
-    timer: CHAIN_DELAY,
-    sources: [{ x: ball.x, y: ball.y }]
+function getFlipperEnd(flipper) {
+  const angle = 0.35 + Math.max(0, Math.sin(flipPhase)) * 0.9;
+  const direction = flipper.side;
+  return {
+    x: flipper.x + direction * flipper.length * Math.cos(angle),
+    y: flipper.y - flipper.length * Math.sin(angle)
   };
 }
 
-function finishChain() {
-  score += chain.count * chain.depth * SCORE_MULTIPLIER;
-  chain = null;
-}
+function resolveFlipper(ball, flipper) {
+  const end = getFlipperEnd(flipper);
+  const ex = end.x - flipper.x;
+  const ey = end.y - flipper.y;
+  const lengthSquared = ex * ex + ey * ey;
+  const t = Math.max(0, Math.min(1, ((ball.x - flipper.x) * ex + (ball.y - flipper.y) * ey) / lengthSquared));
+  const px = flipper.x + ex * t;
+  const py = flipper.y + ey * t;
+  const dx = ball.x - px;
+  const dy = ball.y - py;
+  const distance = Math.hypot(dx, dy);
+  if (distance >= ball.radius + 5) return;
 
-function updateChain(dt) {
-  if (!chain) return;
-  chain.timer -= dt;
-  while (chain.timer <= 0) {
-    const nextSources = [];
-    for (const ball of balls) {
-      if (!ball.alive || !ball.eligible) continue;
-      for (const source of chain.sources) {
-        if (Math.hypot(ball.x - source.x, ball.y - source.y) <= EXPLOSION_RADIUS) {
-          explodeBall(ball);
-          nextSources.push({ x: ball.x, y: ball.y });
-          break;
-        }
-      }
-    }
-    if (nextSources.length === 0) {
-      finishChain();
-      return;
-    }
-    chain.count += nextSources.length;
-    chain.depth++;
-    chain.sources = nextSources;
-    chain.timer += CHAIN_DELAY;
+  let nx = dx / (distance || 1);
+  let ny = dy / (distance || 1);
+  if (ny > 0) {
+    nx = -nx;
+    ny = -ny;
   }
+  ball.x = px + nx * (ball.radius + 5);
+  ball.y = py + ny * (ball.radius + 5);
+  const dot = ball.vx * nx + ball.vy * ny;
+  ball.vx = (ball.vx - 2 * dot * nx) * 0.9;
+  ball.vy = (ball.vy - 2 * dot * ny) * 0.9 - 150;
 }
 
-function updateFever(dt) {
-  if (!FEVER_ENABLED) return;
-  if (feverActive) {
-    feverTimer -= dt;
-    if (feverTimer <= 0) {
-      feverActive = false;
-      nextFever = FEVER_MIN + Math.random() * (FEVER_MAX - FEVER_MIN);
+function updateBalls(dt) {
+  for (let index = balls.length - 1; index >= 0; index--) {
+    const ball = balls[index];
+    ball.hitCooldown -= dt;
+    ball.vy += GRAVITY * dt;
+    ball.x += ball.vx * dt;
+    ball.y += ball.vy * dt;
+
+    if (ball.x < ball.radius) {
+      ball.x = ball.radius;
+      ball.vx = Math.abs(ball.vx) * WALL_RESTITUTION;
+    } else if (ball.x > width - ball.radius) {
+      ball.x = width - ball.radius;
+      ball.vx = -Math.abs(ball.vx) * WALL_RESTITUTION;
     }
-  } else {
-    nextFever -= dt;
-    if (nextFever <= 0) {
-      feverActive = true;
-      feverTimer = FEVER_DURATION;
+    if (ball.y < ball.radius) {
+      ball.y = ball.radius;
+      ball.vy = Math.abs(ball.vy) * WALL_RESTITUTION;
     }
+
+    for (const bumper of bumpers) resolveBumper(ball, bumper);
+    for (const flipper of flippers) resolveFlipper(ball, flipper);
+    if (ball.y > height + 30) balls.splice(index, 1);
   }
-}
 
-function updateSpawns(dt) {
-  let aliveCount = 0;
-  for (const ball of balls) if (ball.alive) aliveCount++;
-  if (aliveCount >= BALL_COUNT) return;
-
-  const cooldown = SPAWN_COOLDOWN / (feverActive ? 3 : 1);
-  spawnTimer -= dt;
-  while (spawnTimer <= 0 && aliveCount < BALL_COUNT) {
-    const deadBall = balls.find(ball => !ball.alive);
-    if (deadBall) {
-      const replacement = createBall();
-      deadBall.x = replacement.x;
-      deadBall.y = replacement.y;
-      deadBall.vx = replacement.vx;
-      deadBall.vy = replacement.vy;
-      deadBall.alive = true;
-    } else {
-      balls.push(createBall());
-    }
-    aliveCount++;
-    spawnTimer += cooldown;
-  }
-}
-
-function updateEffects(dt) {
-  for (const effect of effects) effect.life -= dt;
-  effects = effects.filter(effect => effect.life > 0);
-}
-
-function update(dt) {
-  updateFever(dt);
-  for (const ball of balls) if (ball.alive) updateBall(ball, dt);
-  updateChain(dt);
-  updateSpawns(dt);
-  updateEffects(dt);
+  if (balls.length === 0) balls.push(createBall());
 }
 
 function drawScore() {
   const text = formatScore(score);
-  let size = Math.min(width * 0.3, height * 0.18, 168);
+  let size = Math.min(height * 0.24, 190);
   context.textAlign = "center";
   context.textBaseline = "middle";
   context.font = "900 " + size + "px system-ui, -apple-system, sans-serif";
+  const maxWidth = width * 0.94;
   const measuredWidth = context.measureText(text).width;
-  if (measuredWidth > width * 0.94) {
-    size *= (width * 0.94) / measuredWidth * 0.98;
+  if (measuredWidth > maxWidth) {
+    size = Math.max(20, size * maxWidth / measuredWidth);
     context.font = "900 " + size + "px system-ui, -apple-system, sans-serif";
   }
-  context.fillStyle = feverActive ? "#ffe066" : "#f6f8ff";
-  context.fillText(text, width / 2, Math.max(58, Math.min(height * 0.11, 92)));
+  context.fillStyle = "#f4f8ff";
+  context.fillText(text, width / 2, height / 2);
 }
 
 function draw() {
-  context.fillStyle = feverActive ? "#181020" : "#0a0c12";
+  context.fillStyle = "#05070c";
   context.fillRect(0, 0, width, height);
-
-  context.fillStyle = feverActive ? "#ffd166" : "#69dbff";
-  context.beginPath();
-  for (const ball of balls) {
-    if (!ball.alive) continue;
-    context.moveTo(ball.x + BALL_RADIUS, ball.y);
-    context.arc(ball.x, ball.y, BALL_RADIUS, 0, Math.PI * 2);
-  }
-  context.fill();
-
-  for (const effect of effects) {
-    const progress = 1 - effect.life / effect.duration;
-    context.globalAlpha = Math.max(0, effect.life / effect.duration);
-    context.fillStyle = feverActive ? "#ff8ac4" : "#ff6b6b";
+  for (const bumper of bumpers) {
+    context.fillStyle = bumper.flash > 0 ? "#fff2a8" : "#2f6cff";
     context.beginPath();
-    context.arc(effect.x, effect.y, effect.radius + progress * EXPLOSION_RADIUS * 0.22, 0, Math.PI * 2);
+    context.arc(bumper.x, bumper.y, bumper.radius, 0, Math.PI * 2);
+    context.fill();
+    bumper.flash -= 0.016;
+  }
+
+  context.lineCap = "round";
+  context.lineWidth = 10;
+  context.strokeStyle = "#ff5f8f";
+  for (const flipper of flippers) {
+    const end = getFlipperEnd(flipper);
+    context.beginPath();
+    context.moveTo(flipper.x, flipper.y);
+    context.lineTo(end.x, end.y);
+    context.stroke();
+  }
+
+  context.fillStyle = "#57ffd5";
+  for (const ball of balls) {
+    context.beginPath();
+    context.arc(ball.x, ball.y, ball.radius, 0, Math.PI * 2);
     context.fill();
   }
-  context.globalAlpha = 1;
-
   drawScore();
 }
 
-function loop(now) {
-  if (!lastFrameTime) lastFrameTime = now;
-  const dt = Math.min((now - lastFrameTime) / 1000, 1 / 30);
-  lastFrameTime = now;
-  update(dt);
+function update(timestamp) {
+  if (!lastFrameTime) lastFrameTime = timestamp;
+  const dt = Math.min(0.033, (timestamp - lastFrameTime) / 1000);
+  lastFrameTime = timestamp;
+  if (dt > 0) {
+    flipPhase += dt * 5;
+    updateBalls(dt);
+  }
   draw();
-  requestAnimationFrame(loop);
+  requestAnimationFrame(update);
 }
 
 canvas.addEventListener("pointerdown", event => {
@@ -286,22 +241,18 @@ canvas.addEventListener("pointerdown", event => {
   if (now - lastTapTime <= DOUBLE_TAP_WINDOW) {
     reset();
     lastTapTime = -1;
-    return;
+  } else {
+    lastTapTime = now;
   }
-  lastTapTime = now;
-  const rect = canvas.getBoundingClientRect();
-  const x = event.clientX - rect.left;
-  const y = event.clientY - rect.top;
-  const ball = findTapBall(x, y);
-  if (ball && !chain) startChain(ball);
 });
 canvas.addEventListener("contextmenu", event => event.preventDefault());
 window.addEventListener("resize", resize);
-window.addEventListener("orientationchange", () => setTimeout(resize, 80));
+window.addEventListener("orientationchange", resize);
+document.addEventListener("visibilitychange", () => { lastFrameTime = 0; });
 
 resize();
 reset();
-requestAnimationFrame(loop);
+requestAnimationFrame(update);
 </script>
 </body>
 </html>
