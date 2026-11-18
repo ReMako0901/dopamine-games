@@ -1,0 +1,329 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+  <title>分裂アリーナ1</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: #0b0d12; overflow: hidden; overscroll-behavior: none; touch-action: none; user-select: none; -webkit-user-select: none; -webkit-tap-highlight-color: transparent; }
+    canvas { display: block; width: 100vw; height: 100vh; height: 100dvh; background: #0b0d12; }
+  </style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<script>
+"use strict";
+
+const canvas = document.getElementById("game");
+const context = canvas.getContext("2d", { alpha: false });
+const BASE_BALL_RADIUS = 9;
+const MAX_BALLS = 2400;
+const COOLDOWN = 0.5;
+const GRAVITY = 0;
+const LAUNCH_SPEED = 275;
+const RESTITUTION = 0.76;
+const FRICTION = 0.985;
+const MAX_SPEED = 650;
+const DOUBLE_TAP_WINDOW = 0.32;
+
+let width = 0;
+let height = 0;
+let ballRadius = BASE_BALL_RADIUS;
+let playTop = 0;
+let obstacles = [];
+let balls = [];
+let started = false;
+let lastTapTime = -1;
+let lastFrameTime = 0;
+
+function formatScore(value) {
+  return String(value).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+}
+
+function addObstacle(obstacle) {
+  const radius = obstacle.type === "circle" ? obstacle.radius : obstacle.type === "segment" ? obstacle.thickness : 0;
+  obstacle.minX = obstacle.type === "segment" ? Math.min(obstacle.x1, obstacle.x2) - radius : obstacle.cx - radius;
+  obstacle.maxX = obstacle.type === "segment" ? Math.max(obstacle.x1, obstacle.x2) + radius : obstacle.cx + radius;
+  obstacle.minY = obstacle.type === "segment" ? Math.min(obstacle.y1, obstacle.y2) - radius : obstacle.cy - radius;
+  obstacle.maxY = obstacle.type === "segment" ? Math.max(obstacle.y1, obstacle.y2) + radius : obstacle.cy + radius;
+  obstacles.push(obstacle);
+}
+
+function buildBoard() {
+  obstacles = [];
+  const top = playTop + 44;
+  const bottom = height - 44;
+  const usableHeight = Math.max(120, bottom - top);
+  const rows = 6;
+  for (let row = 0; row < rows; row++) {
+    const y0 = top + (row + 0.5) * usableHeight / rows;
+    const y1 = top + (row + 1.2) * usableHeight / rows;
+    const forward = row % 2 === 0;
+    const startX = forward ? width * 0.06 : width * 0.94;
+    const endX = forward ? width * 0.62 : width * 0.38;
+    addObstacle({ type: "segment", x1: startX, y1: y0, x2: endX, y2: y1, thickness: 7 });
+    addObstacle({ type: "segment", x1: forward ? width * 0.42 : width * 0.58, y1: y0, x2: forward ? width * 0.98 : width * 0.02, y2: y1, thickness: 7 });
+  }
+}
+
+function resize() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  width = Math.max(1, canvas.clientWidth || window.innerWidth);
+  height = Math.max(1, canvas.clientHeight || window.innerHeight);
+  canvas.width = Math.floor(width * dpr);
+  canvas.height = Math.floor(height * dpr);
+  context.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ballRadius = Math.max(BASE_BALL_RADIUS, Math.min(width * 0.024, 12));
+  playTop = Math.max(108, Math.min(height * 0.18, 170));
+  buildBoard();
+  for (const ball of balls) {
+    ball.x = Math.min(Math.max(ball.x, ballRadius), width - ballRadius);
+    ball.y = Math.min(Math.max(ball.y, playTop + ballRadius), height - ballRadius);
+  }
+}
+
+function reset() {
+  balls = [];
+  started = false;
+}
+
+function launch() {
+  const angle = -Math.PI / 4 + Math.random() * Math.PI / 2;
+  balls.push({
+    x: width / 2,
+    y: playTop + (height - playTop) / 2,
+    vx: Math.cos(angle) * LAUNCH_SPEED,
+    vy: Math.sin(angle) * LAUNCH_SPEED,
+    cooldown: COOLDOWN
+  });
+  started = true;
+}
+
+function closestPointOnSegment(x, y, x1, y1, x2, y2) {
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+  const lengthSquared = dx * dx + dy * dy;
+  const t = lengthSquared === 0 ? 0 : Math.min(1, Math.max(0, ((x - x1) * dx + (y - y1) * dy) / lengthSquared));
+  return { x: x1 + dx * t, y: y1 + dy * t };
+}
+
+function pointInPolygon(x, y, points) {
+  let inside = false;
+  for (let i = 0, j = points.length - 1; i < points.length; j = i++) {
+    if ((points[i].y > y) !== (points[j].y > y) &&
+        x < (points[j].x - points[i].x) * (y - points[i].y) / (points[j].y - points[i].y) + points[i].x) {
+      inside = !inside;
+    }
+  }
+  return inside;
+}
+
+function applyNormal(ball, normalX, normalY, overlap) {
+  ball.x += normalX * overlap;
+  ball.y += normalY * overlap;
+  const normalVelocity = ball.vx * normalX + ball.vy * normalY;
+  if (normalVelocity < 0) {
+    const tangentX = -normalY;
+    const tangentY = normalX;
+    const tangentVelocity = ball.vx * tangentX + ball.vy * tangentY;
+    const nextNormalVelocity = -normalVelocity * RESTITUTION;
+    ball.vx = (tangentX * tangentVelocity + normalX * nextNormalVelocity) * FRICTION;
+    ball.vy = (tangentY * tangentVelocity + normalY * nextNormalVelocity) * FRICTION;
+  }
+}
+
+function collideObstacle(ball, obstacle) {
+  if (ball.x + ballRadius < obstacle.minX || ball.x - ballRadius > obstacle.maxX ||
+      ball.y + ballRadius < obstacle.minY || ball.y - ballRadius > obstacle.maxY) return null;
+
+  if (obstacle.type === "circle") {
+    const dx = ball.x - obstacle.cx;
+    const dy = ball.y - obstacle.cy;
+    const distance = Math.hypot(dx, dy);
+    const hitRadius = ballRadius + obstacle.radius;
+    if (distance >= hitRadius || distance === 0) return null;
+    const normalX = dx / distance;
+    const normalY = dy / distance;
+    applyNormal(ball, normalX, normalY, hitRadius - distance);
+    return { x: normalX, y: normalY };
+  }
+
+  if (obstacle.type === "segment") {
+    const point = closestPointOnSegment(ball.x, ball.y, obstacle.x1, obstacle.y1, obstacle.x2, obstacle.y2);
+    const dx = ball.x - point.x;
+    const dy = ball.y - point.y;
+    const distance = Math.hypot(dx, dy);
+    const hitRadius = ballRadius + obstacle.thickness;
+    if (distance >= hitRadius || distance === 0) return null;
+    const normalX = dx / distance;
+    const normalY = dy / distance;
+    applyNormal(ball, normalX, normalY, hitRadius - distance);
+    return { x: normalX, y: normalY };
+  }
+
+  let nearest = null;
+  let nearestDistance = Infinity;
+  for (let i = 0, j = obstacle.points.length - 1; i < obstacle.points.length; j = i++) {
+    const point = closestPointOnSegment(ball.x, ball.y, obstacle.points[j].x, obstacle.points[j].y, obstacle.points[i].x, obstacle.points[i].y);
+    const distance = Math.hypot(ball.x - point.x, ball.y - point.y);
+    if (distance < nearestDistance) {
+      nearestDistance = distance;
+      nearest = point;
+    }
+  }
+
+  if (nearestDistance === 0) return null;
+  const dx = ball.x - nearest.x;
+  const dy = ball.y - nearest.y;
+  let normalX = dx / nearestDistance;
+  let normalY = dy / nearestDistance;
+  if (pointInPolygon(ball.x, ball.y, obstacle.points)) {
+    normalX = -normalX;
+    normalY = -normalY;
+    applyNormal(ball, normalX, normalY, ballRadius + nearestDistance);
+  } else {
+    if (nearestDistance >= ballRadius) return null;
+    applyNormal(ball, normalX, normalY, ballRadius - nearestDistance);
+  }
+  return { x: normalX, y: normalY };
+}
+
+function split(parent, normalX, normalY) {
+  if (parent.cooldown > 0 || balls.length >= MAX_BALLS) return;
+  const childX = parent.x + normalX * ballRadius * 2.2;
+  const childY = parent.y + normalY * ballRadius * 2.2;
+  if (childX < ballRadius || childX > width - ballRadius || childY < playTop + ballRadius || childY > height - ballRadius) return;
+  balls.push({
+    x: childX,
+    y: childY,
+    vx: parent.vx * 0.45 + normalX * 65,
+    vy: parent.vy * 0.45 + normalY * 65,
+    cooldown: COOLDOWN
+  });
+  parent.cooldown = COOLDOWN;
+}
+
+function collideWalls(ball) {
+  if (ball.x < ballRadius) {
+    ball.x = ballRadius;
+    ball.vx = Math.abs(ball.vx) * RESTITUTION;
+    split(ball, 1, 0);
+  } else if (ball.x > width - ballRadius) {
+    ball.x = width - ballRadius;
+    ball.vx = -Math.abs(ball.vx) * RESTITUTION;
+    split(ball, -1, 0);
+  }
+  if (ball.y < playTop + ballRadius) {
+    ball.y = playTop + ballRadius;
+    ball.vy = Math.abs(ball.vy) * RESTITUTION;
+    split(ball, 0, 1);
+  } else if (ball.y > height - ballRadius) {
+    ball.y = height - ballRadius;
+    ball.vy = -Math.abs(ball.vy) * RESTITUTION;
+    split(ball, 0, -1);
+  }
+}
+
+function update(dt) {
+  for (const ball of balls) ball.cooldown = Math.max(0, ball.cooldown - dt);
+  const steps = 3;
+  const stepTime = dt / steps;
+  for (let step = 0; step < steps; step++) {
+    for (let index = 0; index < balls.length; index++) {
+      const ball = balls[index];
+      ball.vy += GRAVITY * stepTime;
+      const speed = Math.hypot(ball.vx, ball.vy);
+      if (speed > MAX_SPEED) {
+        ball.vx *= MAX_SPEED / speed;
+        ball.vy *= MAX_SPEED / speed;
+      }
+      ball.x += ball.vx * stepTime;
+      ball.y += ball.vy * stepTime;
+      collideWalls(ball);
+      for (const obstacle of obstacles) {
+        const normal = collideObstacle(ball, obstacle);
+        if (normal) split(ball, normal.x, normal.y);
+      }
+    }
+  }
+}
+
+function drawObstacles() {
+  context.fillStyle = "#2b3346";
+  for (const obstacle of obstacles) {
+    if (obstacle.type === "circle") {
+      context.beginPath();
+      context.arc(obstacle.cx, obstacle.cy, obstacle.radius, 0, Math.PI * 2);
+      context.fill();
+    } else if (obstacle.type === "segment") {
+      context.lineWidth = obstacle.thickness * 2;
+      context.beginPath();
+      context.moveTo(obstacle.x1, obstacle.y1);
+      context.lineTo(obstacle.x2, obstacle.y2);
+      context.stroke();
+    } else {
+      context.beginPath();
+      context.moveTo(obstacle.points[0].x, obstacle.points[0].y);
+      for (let index = 1; index < obstacle.points.length; index++) context.lineTo(obstacle.points[index].x, obstacle.points[index].y);
+      context.closePath();
+      context.fill();
+    }
+  }
+}
+
+function drawScore() {
+  const text = formatScore(balls.length);
+  let size = Math.min(width * 0.29, 142);
+  do {
+    context.font = `700 ${size}px system-ui, -apple-system, sans-serif`;
+    if (context.measureText(text).width <= width * 0.93) break;
+    size -= 4;
+  } while (size > 24);
+  context.fillStyle = "#f4f7ff";
+  context.textAlign = "center";
+  context.textBaseline = "middle";
+  context.fillText(text, width / 2, playTop * 0.48, width * 0.96);
+}
+
+function draw() {
+  context.fillStyle = "#0b0d12";
+  context.fillRect(0, 0, width, height);
+  drawObstacles();
+  context.fillStyle = "#63d2ff";
+  context.beginPath();
+  for (const ball of balls) {
+    context.moveTo(ball.x + ballRadius, ball.y);
+    context.arc(ball.x, ball.y, ballRadius, 0, Math.PI * 2);
+  }
+  context.fill();
+  drawScore();
+}
+
+function loop(now) {
+  if (!lastFrameTime) lastFrameTime = now;
+  const dt = Math.min((now - lastFrameTime) / 1000, 0.033);
+  lastFrameTime = now;
+  if (started) update(dt);
+  draw();
+  requestAnimationFrame(loop);
+}
+
+canvas.addEventListener("pointerdown", event => {
+  event.preventDefault();
+  const now = performance.now() / 1000;
+  if (now - lastTapTime <= DOUBLE_TAP_WINDOW) {
+    reset();
+    lastTapTime = -1;
+    return;
+  }
+  lastTapTime = now;
+  if (!started) launch();
+});
+canvas.addEventListener("contextmenu", event => event.preventDefault());
+
+resize();
+window.addEventListener("resize", resize);
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
