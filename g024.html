@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+  <title>プチプチシート</title>
+  <style>
+    html, body { margin: 0; width: 100%; height: 100%; background: #05070d; overflow: hidden; overscroll-behavior: none; touch-action: none; user-select: none; -webkit-user-select: none; -webkit-tap-highlight-color: transparent; }
+    canvas { display: block; width: 100vw; height: 100vh; height: 100dvh; background: #05070d; }
+  </style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<script>
+"use strict";
+
+const canvas = document.getElementById("game");
+const context = canvas.getContext("2d", { alpha: false });
+const DOUBLE_TAP_WINDOW = 320;
+
+let width = 1;
+let height = 1;
+let score = 0n;
+let sheetLevel = 0;
+let grid = [];
+let columns = 7;
+let rows = 12;
+let cellSize = 40;
+let offsetX = 0;
+let offsetY = 0;
+let lastTapTime = -DOUBLE_TAP_WINDOW;
+let lastFrameTime = 0;
+
+function formatScore(value) {
+  return value.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+}
+
+function resize() {
+  const pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
+  width = Math.max(1, canvas.clientWidth || window.innerWidth);
+  height = Math.max(1, canvas.clientHeight || window.innerHeight);
+  canvas.width = Math.floor(width * pixelRatio);
+  canvas.height = Math.floor(height * pixelRatio);
+  context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
+  createSheet();
+}
+
+function reset() {
+  score = 0n;
+  sheetLevel = 0;
+  createSheet();
+}
+
+function createSheet() {
+  columns = Math.max(5, Math.round(7 * Math.pow(2, sheetLevel / 2)));
+  const playTop = height * 0.16;
+  const playWidth = Math.max(80, width - 16);
+  const playHeight = Math.max(120, height - playTop - 14);
+  cellSize = playWidth / columns;
+  rows = Math.max(6, Math.floor(playHeight / cellSize));
+  offsetX = (width - columns * cellSize) / 2;
+  offsetY = playTop + (playHeight - rows * cellSize) / 2;
+  grid = [];
+  for (let index = 0; index < columns * rows; index++) {
+    grid.push({ popped: false, chain: Math.random() < 0.35 });
+  }
+}
+
+function popAt(index) {
+  if (index < 0 || index >= grid.length || grid[index].popped) return;
+  grid[index].popped = true;
+  score += 1n;
+}
+
+function popCell(index, allowChain) {
+  if (index < 0 || index >= grid.length || grid[index].popped) return;
+  popAt(index);
+  if (!allowChain) return;
+
+  const x = index % columns;
+  const y = Math.floor(index / columns);
+  const neighbors = [];
+  if (x > 0) neighbors.push(index - 1);
+  if (x < columns - 1) neighbors.push(index + 1);
+  if (y > 0) neighbors.push(index - columns);
+  if (y < rows - 1) neighbors.push(index + columns);
+  for (const neighbor of neighbors) {
+    if (!grid[neighbor].popped && Math.random() < 0.36) {
+      popCell(neighbor, true);
+    }
+  }
+}
+
+function tapSheet(x, y) {
+  const cellX = Math.floor((x - offsetX) / cellSize);
+  const cellY = Math.floor((y - offsetY) / cellSize);
+  if (cellX < 0 || cellX >= columns || cellY < 0 || cellY >= rows) return;
+  popCell(cellY * columns + cellX, true);
+  if (grid.every(cell => cell.popped)) {
+    sheetLevel++;
+    createSheet();
+  }
+}
+
+function update() {
+}
+
+function drawNumber() {
+  const text = formatScore(score);
+  let size = Math.min(width * 0.26, height * 0.16);
+  const maxWidth = width * 0.9;
+  do {
+    context.font = `900 ${size}px "Helvetica Neue", Arial, sans-serif`;
+    if (context.measureText(text).width <= maxWidth) break;
+    size *= 0.88;
+  } while (size > 9);
+  context.textAlign = "center";
+  context.textBaseline = "middle";
+  context.fillStyle = "#f2f7ff";
+  context.fillText(text, width / 2, height * 0.09);
+}
+
+function draw() {
+  context.fillStyle = "#05070d";
+  context.fillRect(0, 0, width, height);
+  for (let index = 0; index < grid.length; index++) {
+    const item = grid[index];
+    const x = offsetX + (index % columns) * cellSize;
+    const y = offsetY + Math.floor(index / columns) * cellSize;
+    const inset = item.popped ? Math.max(2, cellSize * 0.22) : Math.max(1, cellSize * 0.08);
+    context.fillStyle = item.popped ? "#0a0e18" : item.chain ? "#7048e8" : "#4c6ef5";
+    context.fillRect(x + inset, y + inset, cellSize - inset * 2, cellSize - inset * 2);
+  }
+  drawNumber();
+}
+
+function frame(now) {
+  if (!lastFrameTime) lastFrameTime = now;
+  lastFrameTime = now;
+  update();
+  draw();
+  requestAnimationFrame(frame);
+}
+
+canvas.addEventListener("pointerdown", (event) => {
+  event.preventDefault();
+  const now = performance.now();
+  if (now - lastTapTime < DOUBLE_TAP_WINDOW) {
+    reset();
+    lastTapTime = -DOUBLE_TAP_WINDOW;
+  } else {
+    lastTapTime = now;
+    tapSheet(event.clientX, event.clientY);
+  }
+}, { passive: false });
+
+window.addEventListener("resize", () => {
+  resize();
+  reset();
+});
+window.addEventListener("orientationchange", () => {
+  resize();
+  reset();
+});
+
+resize();
+reset();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

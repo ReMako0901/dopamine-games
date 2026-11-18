@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+  <title>スネーク数字</title>
+  <style>
+    html, body { margin: 0; width: 100%; height: 100%; background: #05070d; overflow: hidden; overscroll-behavior: none; touch-action: none; user-select: none; -webkit-user-select: none; -webkit-tap-highlight-color: transparent; }
+    canvas { display: block; width: 100vw; height: 100vh; height: 100dvh; background: #05070d; }
+  </style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<script>
+"use strict";
+
+const canvas = document.getElementById("game");
+const context = canvas.getContext("2d", { alpha: false });
+const DOUBLE_TAP_WINDOW = 320;
+const SWIPE_DISTANCE = 26;
+
+let width = 1;
+let height = 1;
+let score = 0n;
+let snake = [];
+let direction = { x: 1, y: 0 };
+let queuedDirection = { x: 1, y: 0 };
+let food = { x: 5, y: 5, value: 1 };
+let moveTimer = 0;
+let moveInterval = 0.16;
+let grid = { columns: 12, rows: 16, cell: 24, x: 0, y: 0 };
+let pointerStart = null;
+let lastTapTime = -DOUBLE_TAP_WINDOW;
+let lastFrameTime = 0;
+
+function formatScore(value) {
+  return value.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+}
+
+function resize() {
+  const pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
+  width = Math.max(1, canvas.clientWidth || window.innerWidth);
+  height = Math.max(1, canvas.clientHeight || window.innerHeight);
+  canvas.width = Math.floor(width * pixelRatio);
+  canvas.height = Math.floor(height * pixelRatio);
+  context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
+  layoutGrid();
+}
+
+function layoutGrid() {
+  const playTop = height * 0.22;
+  const playWidth = width - 18;
+  const playHeight = height - playTop - 18;
+  const targetCell = Math.max(18, Math.min(34, Math.min(playWidth / 12, playHeight / 16)));
+  grid.cell = targetCell;
+  grid.columns = Math.max(8, Math.floor(playWidth / targetCell));
+  grid.rows = Math.max(8, Math.floor(playHeight / targetCell));
+  grid.x = (width - grid.columns * targetCell) / 2;
+  grid.y = playTop + (playHeight - grid.rows * targetCell) / 2;
+}
+
+function reset() {
+  score = 0n;
+  layoutGrid();
+  const startX = Math.floor(grid.columns / 2) - 1;
+  const startY = Math.floor(grid.rows / 2);
+  snake = [
+    { x: startX, y: startY, value: 0 },
+    { x: startX - 1, y: startY, value: 0 },
+    { x: startX - 2, y: startY, value: 0 }
+  ];
+  direction = { x: 1, y: 0 };
+  queuedDirection = { x: 1, y: 0 };
+  moveTimer = 0;
+  moveInterval = 0.16;
+  food = makeFood();
+}
+
+function makeFood() {
+  const occupied = new Set(snake.map(item => `${item.x},${item.y}`));
+  let cell = { x: 0, y: 0 };
+  let key = "";
+  do {
+    cell = {
+      x: Math.floor(Math.random() * grid.columns),
+      y: Math.floor(Math.random() * grid.rows)
+    };
+    key = `${cell.x},${cell.y}`;
+  } while (occupied.has(key));
+  return {
+    x: cell.x,
+    y: cell.y,
+    value: 1 + Math.floor(Math.random() * 9)
+  };
+}
+
+function setDirection(nextX, nextY) {
+  if (nextX === 0 && nextY === 0) return;
+  if (nextX === -direction.x && nextY === -direction.y) return;
+  if (nextX === direction.x && nextY === direction.y) return;
+  queuedDirection = { x: nextX, y: nextY };
+}
+
+function moveSnake() {
+  direction = queuedDirection;
+  const head = snake[0];
+  const nextHead = {
+    x: (head.x + direction.x + grid.columns) % grid.columns,
+    y: (head.y + direction.y + grid.rows) % grid.rows,
+    value: 0
+  };
+
+  const willEat = nextHead.x === food.x && nextHead.y === food.y;
+  const bodyEnd = willEat ? snake.length : snake.length - 1;
+  for (let index = 0; index < bodyEnd; index++) {
+    if (snake[index].x === nextHead.x && snake[index].y === nextHead.y) {
+      snake = snake.slice(0, 3);
+      snake[0].value = 0;
+      snake[1].value = 0;
+      snake[2].value = 0;
+      food = makeFood();
+      return;
+    }
+  }
+
+  if (willEat) {
+    score += BigInt(food.value);
+    nextHead.value = food.value;
+    snake.unshift(nextHead);
+    food = makeFood();
+    moveInterval = Math.max(0.085, moveInterval - 0.0025);
+  } else {
+    snake.unshift(nextHead);
+    snake.pop();
+  }
+}
+
+function update(delta) {
+  moveTimer += delta;
+  while (moveTimer >= moveInterval) {
+    moveTimer -= moveInterval;
+    moveSnake();
+  }
+}
+
+function drawNumber() {
+  const text = formatScore(score);
+  let size = Math.min(width * 0.25, height * 0.16);
+  const maxWidth = width * 0.9;
+  do {
+    context.font = `900 ${size}px "Helvetica Neue", Arial, sans-serif`;
+    if (context.measureText(text).width <= maxWidth) break;
+    size *= 0.88;
+  } while (size > 9);
+  context.textAlign = "center";
+  context.textBaseline = "middle";
+  context.fillStyle = "#f2f7ff";
+  context.fillText(text, width / 2, height * 0.13);
+}
+
+function drawCell(x, y, value, color, textColor) {
+  const px = grid.x + x * grid.cell;
+  const py = grid.y + y * grid.cell;
+  context.fillStyle = color;
+  context.fillRect(px + 1, py + 1, grid.cell - 2, grid.cell - 2);
+  if (value > 0) {
+    context.fillStyle = textColor;
+    context.font = `800 ${Math.max(10, grid.cell * 0.45)}px Arial, sans-serif`;
+    context.textAlign = "center";
+    context.textBaseline = "middle";
+    context.fillText(String(value), px + grid.cell / 2, py + grid.cell / 2);
+  }
+}
+
+function draw() {
+  context.fillStyle = "#05070d";
+  context.fillRect(0, 0, width, height);
+  context.fillStyle = "#0b1020";
+  context.fillRect(grid.x, grid.y, grid.columns * grid.cell, grid.rows * grid.cell);
+  drawCell(food.x, food.y, food.value, "#ffd166", "#40310b");
+  for (const item of snake) {
+    drawCell(item.x, item.y, item.value, item.value > 0 ? "#748ffc" : "#49546a", "#e8f1ff");
+  }
+  drawNumber();
+}
+
+function frame(now) {
+  if (!lastFrameTime) lastFrameTime = now;
+  const delta = Math.min((now - lastFrameTime) / 1000, 0.035);
+  lastFrameTime = now;
+  update(delta);
+  draw();
+  requestAnimationFrame(frame);
+}
+
+canvas.addEventListener("pointerdown", (event) => {
+  event.preventDefault();
+  const now = performance.now();
+  if (now - lastTapTime < DOUBLE_TAP_WINDOW) {
+    reset();
+    lastTapTime = -DOUBLE_TAP_WINDOW;
+    pointerStart = null;
+  } else {
+    lastTapTime = now;
+    pointerStart = { x: event.clientX, y: event.clientY };
+  }
+}, { passive: false });
+
+canvas.addEventListener("pointermove", (event) => {
+  if (!pointerStart) return;
+  const dx = event.clientX - pointerStart.x;
+  const dy = event.clientY - pointerStart.y;
+  if (Math.hypot(dx, dy) < SWIPE_DISTANCE) return;
+  if (Math.abs(dx) > Math.abs(dy)) setDirection(dx > 0 ? 1 : -1, 0);
+  else setDirection(0, dy > 0 ? 1 : -1);
+  pointerStart = { x: event.clientX, y: event.clientY };
+}, { passive: false });
+
+window.addEventListener("pointerup", () => {
+  pointerStart = null;
+});
+window.addEventListener("pointercancel", () => {
+  pointerStart = null;
+});
+
+window.addEventListener("resize", () => {
+  resize();
+  reset();
+});
+window.addEventListener("orientationchange", () => {
+  resize();
+  reset();
+});
+
+resize();
+reset();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

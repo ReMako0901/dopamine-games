@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+  <title>ドミノ倒し</title>
+  <style>
+    html, body { margin: 0; width: 100%; height: 100%; background: #05070d; overflow: hidden; overscroll-behavior: none; touch-action: none; user-select: none; -webkit-user-select: none; -webkit-tap-highlight-color: transparent; }
+    canvas { display: block; width: 100vw; height: 100vh; height: 100dvh; background: #05070d; }
+  </style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<script>
+"use strict";
+
+const canvas = document.getElementById("game");
+const context = canvas.getContext("2d", { alpha: false });
+const DOUBLE_TAP_WINDOW = 320;
+const MAX_VISUAL_PIECES = 180;
+const MAX_COUNT = Number.MAX_SAFE_INTEGER;
+
+let width = 1;
+let height = 1;
+let score = 0n;
+let count = 10;
+let pieces = [];
+let waveIndex = 0;
+let waveTimer = 0;
+let waveDelay = 0.024;
+let falling = false;
+let completeTimer = 0;
+let lastTapTime = -DOUBLE_TAP_WINDOW;
+let lastFrameTime = 0;
+
+function formatScore(value) {
+  return value.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+}
+
+function resize() {
+  const pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
+  width = Math.max(1, canvas.clientWidth || window.innerWidth);
+  height = Math.max(1, canvas.clientHeight || window.innerHeight);
+  canvas.width = Math.floor(width * pixelRatio);
+  canvas.height = Math.floor(height * pixelRatio);
+  context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
+}
+
+function createPieces() {
+  pieces = [];
+  waveIndex = 0;
+  waveTimer = 0;
+  completeTimer = 0;
+  falling = false;
+
+  let visualCount = count;
+  let groupSize = 1;
+  if (count > MAX_VISUAL_PIECES) {
+    groupSize = Math.ceil((count - 1) / (MAX_VISUAL_PIECES - 1));
+    visualCount = 1 + Math.ceil((count - 1) / groupSize);
+  }
+  waveDelay = Math.max(0.013, 0.24 / Math.sqrt(visualCount));
+
+  const playTop = height * 0.2;
+  const playLeft = 10;
+  const playWidth = Math.max(90, width - playLeft * 2);
+  const playHeight = Math.max(140, height - playTop - 14);
+  const piecesPerLane = Math.max(1, Math.min(visualCount, Math.floor(playWidth / Math.max(20, playWidth / 12))));
+  const laneCount = Math.ceil(visualCount / piecesPerLane);
+  const laneHeight = playHeight / laneCount;
+  const pieceHeight = Math.max(9, Math.min(40, laneHeight * 0.68));
+  const pieceWidth = Math.max(5, Math.min(11, pieceHeight * 0.24));
+  const spacing = playWidth / (piecesPerLane + 1);
+  let remaining = count;
+
+  for (let index = 0; index < visualCount; index++) {
+    const lane = Math.floor(index / piecesPerLane);
+    const laneIndex = index % piecesPerLane;
+    const reversed = lane % 2 === 1;
+    const column = reversed ? piecesPerLane - laneIndex - 1 : laneIndex;
+    const group = Math.min(index === 0 ? 1 : groupSize, remaining);
+    remaining -= group;
+    pieces.push({
+      x: playLeft + spacing * (column + 1),
+      y: playTop + laneHeight * (lane + 0.82),
+      width: pieceWidth,
+      height: pieceHeight,
+      angle: 0,
+      targetAngle: 0,
+      fallSign: reversed ? -1 : 1,
+      group
+    });
+  }
+}
+
+function reset() {
+  score = 0n;
+  count = 10;
+  createPieces();
+}
+
+function startWave() {
+  if (falling || pieces.length === 0) return;
+  falling = true;
+  const first = pieces[0];
+  first.targetAngle = first.fallSign * 1.35;
+  score += BigInt(first.group);
+  waveIndex = 1;
+}
+
+function update(delta) {
+  if (!falling) return;
+
+  waveTimer += delta;
+  while (waveIndex < pieces.length && waveTimer >= waveDelay) {
+    waveTimer -= waveDelay;
+    const piece = pieces[waveIndex];
+    piece.targetAngle = piece.fallSign * 1.35;
+    score += BigInt(piece.group);
+    waveIndex++;
+  }
+
+  let settled = waveIndex === pieces.length;
+  for (const piece of pieces) {
+    const speed = Math.max(4, 16 - piece.height * 0.05);
+    piece.angle += (piece.targetAngle - piece.angle) * Math.min(1, delta * speed);
+    if (Math.abs(piece.targetAngle - piece.angle) > 0.08) settled = false;
+  }
+
+  if (settled) {
+    completeTimer += delta;
+    if (completeTimer >= 0.3) {
+      count = Math.min(MAX_COUNT, count * 2);
+      createPieces();
+    }
+  }
+}
+
+function drawNumber() {
+  const text = formatScore(score);
+  let size = Math.min(width * 0.26, height * 0.16);
+  const maxWidth = width * 0.9;
+  do {
+    context.font = `900 ${size}px "Helvetica Neue", Arial, sans-serif`;
+    if (context.measureText(text).width <= maxWidth) break;
+    size *= 0.88;
+  } while (size > 9);
+  context.textAlign = "center";
+  context.textBaseline = "middle";
+  context.fillStyle = "#f2f7ff";
+  context.fillText(text, width / 2, height * 0.1);
+}
+
+function draw() {
+  context.fillStyle = "#05070d";
+  context.fillRect(0, 0, width, height);
+  context.fillStyle = "#101527";
+  context.fillRect(0, height * 0.2, width, height * 0.8);
+  for (const piece of pieces) {
+    context.save();
+    context.translate(piece.x, piece.y);
+    context.rotate(piece.angle);
+    context.fillStyle = Math.abs(piece.angle) > 0.08 ? "#ffd166" : "#4c6ef5";
+    context.fillRect(-piece.width / 2, -piece.height, piece.width, piece.height);
+    context.restore();
+  }
+  drawNumber();
+}
+
+function frame(now) {
+  if (!lastFrameTime) lastFrameTime = now;
+  const delta = Math.min((now - lastFrameTime) / 1000, 0.035);
+  lastFrameTime = now;
+  update(delta);
+  draw();
+  requestAnimationFrame(frame);
+}
+
+canvas.addEventListener("pointerdown", (event) => {
+  event.preventDefault();
+  const now = performance.now();
+  if (now - lastTapTime < DOUBLE_TAP_WINDOW) {
+    reset();
+    lastTapTime = -DOUBLE_TAP_WINDOW;
+  } else {
+    lastTapTime = now;
+    startWave();
+  }
+}, { passive: false });
+
+window.addEventListener("resize", () => {
+  resize();
+  reset();
+});
+window.addEventListener("orientationchange", () => {
+  resize();
+  reset();
+});
+
+resize();
+reset();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
