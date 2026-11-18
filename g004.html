@@ -1,315 +1,126 @@
 <!doctype html>
 <html lang="ja">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
-  <title>分裂アリーナ4</title>
-  <style>
-    html, body { margin: 0; height: 100%; background: #090c14; overflow: hidden; overscroll-behavior: none; touch-action: none; user-select: none; -webkit-user-select: none; -webkit-tap-highlight-color: transparent; }
-    canvas { display: block; width: 100vw; height: 100vh; height: 100dvh; background: #090c14; }
-  </style>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<title>合体ドロップ</title>
+<style>
+html,body{margin:0;height:100%;background:#080c14;overflow:hidden;overscroll-behavior:none;touch-action:none;user-select:none;-webkit-user-select:none;-webkit-tap-highlight-color:transparent}
+canvas{display:block;width:100vw;height:100vh;height:100dvh;background:#080c14}
+</style>
 </head>
 <body>
 <canvas id="game"></canvas>
 <script>
 "use strict";
+const canvas=document.getElementById("game"),context=canvas.getContext("2d",{alpha:false});
+let width=393,height=852,dpr=1;
+const balls=[];
+let score=0,lastTap=0,lastTime=0;
 
-const canvas = document.getElementById("game");
-const context = canvas.getContext("2d", { alpha: false });
-const BASE_BALL_RADIUS = 7;
-const MAX_BALLS = 3000;
-const COOLDOWN = 0.3;
-const GRAVITY = 190;
-const LAUNCH_SPEED = 280;
-const RESTITUTION = 0.74;
-const FRICTION = 0.984;
-const MAX_SPEED = 620;
-const DOUBLE_TAP_WINDOW = 0.32;
-
-let width = 0;
-let height = 0;
-let ballRadius = BASE_BALL_RADIUS;
-let playTop = 0;
-let obstacles = [];
-let balls = [];
-let started = false;
-let lastTapTime = -1;
-let lastFrameTime = 0;
-
-function formatScore(value) {
-  return String(value).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+function resize(){
+  dpr=Math.min(window.devicePixelRatio||1,2);
+  width=Math.max(1,canvas.clientWidth||window.innerWidth);
+  height=Math.max(1,canvas.clientHeight||window.innerHeight);
+  canvas.width=Math.floor(width*dpr);canvas.height=Math.floor(height*dpr);
+  context.setTransform(dpr,0,0,dpr,0,0);
 }
 
-function addObstacle(obstacle) {
-  const padding = obstacle.type === "segment" ? obstacle.thickness : 0;
-  obstacle.minX = obstacle.type === "segment" ? Math.min(obstacle.x1, obstacle.x2) - padding : obstacle.cx - obstacle.radius - padding;
-  obstacle.maxX = obstacle.type === "segment" ? Math.max(obstacle.x1, obstacle.x2) + padding : obstacle.cx + obstacle.radius + padding;
-  obstacle.minY = obstacle.type === "segment" ? Math.min(obstacle.y1, obstacle.y2) - padding : obstacle.cy - obstacle.radius - padding;
-  obstacle.maxY = obstacle.type === "segment" ? Math.max(obstacle.y1, obstacle.y2) + padding : obstacle.cy + obstacle.radius + padding;
-  obstacles.push(obstacle);
+function reset(){balls.length=0;score=0;}
+
+function radiusFor(value){
+  const exponent=Math.max(1,Math.log2(value));
+  return Math.min(width*0.10,width*0.031+exponent*width*0.008);
 }
 
-function buildBoard() {
-  obstacles = [];
-  const top = playTop + 40;
-  const bottom = height - 40;
-  const usableHeight = Math.max(130, bottom - top);
-  for (let row = 0; row < 6; row++) {
-    const y = top + (row + 0.5) * usableHeight / 6;
-    const left = row % 2 ? width * 0.12 : width * 0.04;
-    const right = row % 2 ? width * 0.88 : width * 0.96;
-    addObstacle({ type: "segment", x1: left, y1: y, x2: right, y2: y, thickness: 6 });
-    const cx = row % 2 ? width * 0.5 : width * (row % 4 === 0 ? 0.3 : 0.7);
-    const size = Math.min(width * 0.11, usableHeight / 18);
-    addObstacle({ type: "polygon", cx, cy: y + usableHeight / 18, radius: size, points: [
-      { x: cx, y: y + usableHeight / 18 - size },
-      { x: cx + size * 0.62, y: y + usableHeight / 18 },
-      { x: cx, y: y + usableHeight / 18 + size },
-      { x: cx - size * 0.62, y: y + usableHeight / 18 }
-    ] });
+function drop(x,y){
+  if(balls.length>=220)return;
+  const radius=radiusFor(2);
+  balls.push({value:2,x:Math.max(radius,Math.min(width-radius,x)),y:Math.max(radius,Math.min(height-radius,y)),r:radius,vx:0,vy:0});
+}
+
+function merge(a,b){
+  const indexA=balls.indexOf(a),indexB=balls.indexOf(b);
+  if(indexA<0||indexB<0)return;
+  const highest=Math.max(indexA,indexB),lowest=Math.min(indexA,indexB);
+  balls.splice(highest,1);balls.splice(lowest,1);
+  const value=a.value*2,x=(a.x+b.x)/2,y=(a.y+b.y)/2,radius=radiusFor(value);
+  balls.push({value,x:Math.max(radius,Math.min(width-radius,x)),y:Math.max(radius,Math.min(height-radius,y)),r:radius,vx:(a.vx+b.vx)*0.25,vy:(a.vy+b.vy)*0.25});
+  score+=value;
+}
+
+function update(delta){
+  for(const ball of balls){
+    ball.vy+=800*delta;
+    ball.x+=ball.vx*delta;ball.y+=ball.vy*delta;
+    if(ball.x-ball.r<0){ball.x=ball.r;ball.vx=Math.abs(ball.vx)*0.35;}
+    if(ball.x+ball.r>width){ball.x=width-ball.r;ball.vx=-Math.abs(ball.vx)*0.35;}
+    if(ball.y+ball.r>height){ball.y=height-ball.r;ball.vy=0;ball.vx*=0.72;}
+    if(ball.y-ball.r<0){ball.y=ball.r;ball.vy=Math.max(0,ball.vy);}
   }
-}
-
-function resize() {
-  const dpr = Math.min(window.devicePixelRatio || 1, 2);
-  width = Math.max(1, canvas.clientWidth || window.innerWidth);
-  height = Math.max(1, canvas.clientHeight || window.innerHeight);
-  canvas.width = Math.floor(width * dpr);
-  canvas.height = Math.floor(height * dpr);
-  context.setTransform(dpr, 0, 0, dpr, 0, 0);
-  ballRadius = Math.max(BASE_BALL_RADIUS, Math.min(width * 0.019, 10));
-  playTop = Math.max(108, Math.min(height * 0.18, 170));
-  buildBoard();
-  for (const ball of balls) {
-    ball.x = Math.min(Math.max(ball.x, ballRadius), width - ballRadius);
-    ball.y = Math.min(Math.max(ball.y, playTop + ballRadius), height - ballRadius);
-  }
-}
-
-function reset() {
-  balls = [];
-  started = false;
-}
-
-function launch() {
-  const angle = -Math.PI / 4 + Math.random() * Math.PI / 2;
-  balls.push({
-    x: width / 2,
-    y: playTop + (height - playTop) / 2,
-    vx: Math.cos(angle) * LAUNCH_SPEED,
-    vy: Math.sin(angle) * LAUNCH_SPEED,
-    cooldown: COOLDOWN
-  });
-  started = true;
-}
-
-function closestPointOnSegment(x, y, x1, y1, x2, y2) {
-  const dx = x2 - x1;
-  const dy = y2 - y1;
-  const lengthSquared = dx * dx + dy * dy;
-  const t = lengthSquared === 0 ? 0 : Math.min(1, Math.max(0, ((x - x1) * dx + (y - y1) * dy) / lengthSquared));
-  return { x: x1 + dx * t, y: y1 + dy * t };
-}
-
-function pointInPolygon(x, y, points) {
-  let inside = false;
-  for (let i = 0, j = points.length - 1; i < points.length; j = i++) {
-    if ((points[i].y > y) !== (points[j].y > y) &&
-        x < (points[j].x - points[i].x) * (y - points[i].y) / (points[j].y - points[i].y) + points[i].x) inside = !inside;
-  }
-  return inside;
-}
-
-function applyNormal(ball, normalX, normalY, overlap) {
-  ball.x += normalX * overlap;
-  ball.y += normalY * overlap;
-  const normalVelocity = ball.vx * normalX + ball.vy * normalY;
-  if (normalVelocity < 0) {
-    const tangentX = -normalY;
-    const tangentY = normalX;
-    const tangentVelocity = ball.vx * tangentX + ball.vy * tangentY;
-    const nextNormalVelocity = -normalVelocity * RESTITUTION;
-    ball.vx = (tangentX * tangentVelocity + normalX * nextNormalVelocity) * FRICTION;
-    ball.vy = (tangentY * tangentVelocity + normalY * nextNormalVelocity) * FRICTION;
-  }
-}
-
-function collideObstacle(ball, obstacle) {
-  if (ball.x + ballRadius < obstacle.minX || ball.x - ballRadius > obstacle.maxX ||
-      ball.y + ballRadius < obstacle.minY || ball.y - ballRadius > obstacle.maxY) return null;
-
-  if (obstacle.type === "segment") {
-    const point = closestPointOnSegment(ball.x, ball.y, obstacle.x1, obstacle.y1, obstacle.x2, obstacle.y2);
-    const dx = ball.x - point.x;
-    const dy = ball.y - point.y;
-    const distance = Math.hypot(dx, dy);
-    const hitRadius = ballRadius + obstacle.thickness;
-    if (distance >= hitRadius || distance === 0) return null;
-    const normalX = dx / distance;
-    const normalY = dy / distance;
-    applyNormal(ball, normalX, normalY, hitRadius - distance);
-    return { x: normalX, y: normalY };
-  }
-
-  let nearest = null;
-  let nearestDistance = Infinity;
-  for (let i = 0, j = obstacle.points.length - 1; i < obstacle.points.length; j = i++) {
-    const point = closestPointOnSegment(ball.x, ball.y, obstacle.points[j].x, obstacle.points[j].y, obstacle.points[i].x, obstacle.points[i].y);
-    const distance = Math.hypot(ball.x - point.x, ball.y - point.y);
-    if (distance < nearestDistance) {
-      nearestDistance = distance;
-      nearest = point;
-    }
-  }
-  if (nearestDistance === 0) return null;
-  const dx = ball.x - nearest.x;
-  const dy = ball.y - nearest.y;
-  let normalX = dx / nearestDistance;
-  let normalY = dy / nearestDistance;
-  if (pointInPolygon(ball.x, ball.y, obstacle.points)) {
-    normalX = -normalX;
-    normalY = -normalY;
-    applyNormal(ball, normalX, normalY, ballRadius + nearestDistance);
-  } else {
-    if (nearestDistance >= ballRadius) return null;
-    applyNormal(ball, normalX, normalY, ballRadius - nearestDistance);
-  }
-  return { x: normalX, y: normalY };
-}
-
-function split(parent, normalX, normalY) {
-  if (parent.cooldown > 0 || balls.length >= MAX_BALLS) return;
-  const childX = parent.x + normalX * ballRadius * 2.1;
-  const childY = parent.y + normalY * ballRadius * 2.1;
-  if (childX < ballRadius || childX > width - ballRadius || childY < playTop + ballRadius || childY > height - ballRadius) return;
-  balls.push({
-    x: childX,
-    y: childY,
-    vx: parent.vx * 0.45 + normalX * 70,
-    vy: parent.vy * 0.45 + normalY * 70,
-    cooldown: COOLDOWN
-  });
-  parent.cooldown = COOLDOWN;
-}
-
-function collideWalls(ball) {
-  if (ball.x < ballRadius) {
-    ball.x = ballRadius;
-    ball.vx = Math.abs(ball.vx) * RESTITUTION;
-    split(ball, 1, 0);
-  } else if (ball.x > width - ballRadius) {
-    ball.x = width - ballRadius;
-    ball.vx = -Math.abs(ball.vx) * RESTITUTION;
-    split(ball, -1, 0);
-  }
-  if (ball.y < playTop + ballRadius) {
-    ball.y = playTop + ballRadius;
-    ball.vy = Math.abs(ball.vy) * RESTITUTION;
-    split(ball, 0, 1);
-  } else if (ball.y > height - ballRadius) {
-    ball.y = height - ballRadius;
-    ball.vy = -Math.abs(ball.vy) * RESTITUTION;
-    split(ball, 0, -1);
-  }
-}
-
-function update(dt) {
-  for (const ball of balls) ball.cooldown = Math.max(0, ball.cooldown - dt);
-  const steps = 4;
-  const stepTime = dt / steps;
-  for (let step = 0; step < steps; step++) {
-    for (let index = 0; index < balls.length; index++) {
-      const ball = balls[index];
-      ball.vy += GRAVITY * stepTime;
-      const speed = Math.hypot(ball.vx, ball.vy);
-      if (speed > MAX_SPEED) {
-        ball.vx *= MAX_SPEED / speed;
-        ball.vy *= MAX_SPEED / speed;
-      }
-      ball.x += ball.vx * stepTime;
-      ball.y += ball.vy * stepTime;
-      collideWalls(ball);
-      for (const obstacle of obstacles) {
-        const normal = collideObstacle(ball, obstacle);
-        if (normal) split(ball, normal.x, normal.y);
+  for(let i=0;i<balls.length;i++){
+    for(let j=i+1;j<balls.length;j++){
+      const a=balls[i],b=balls[j];
+      if(!balls.includes(a)||!balls.includes(b))continue;
+      const dx=b.x-a.x,dy=b.y-a.y,distance=Math.hypot(dx,dy),sum=a.r+b.r;
+      if(a.value===b.value&&distance<=sum*0.92){merge(a,b);i=Math.max(-1,i-1);break;}
+      if(distance<sum&&distance>0){
+        const nx=dx/distance,ny=dy/distance,correction=(sum-distance)*0.5;
+        a.x-=nx*correction;a.y-=ny*correction;
+        b.x+=nx*correction;b.y+=ny*correction;
+        const relative=(b.vx-a.vx)*nx+(b.vy-a.vy)*ny;
+        if(relative<0){
+          const impulse=-relative*0.65;
+          a.vx-=nx*impulse;a.vy-=ny*impulse;
+          b.vx+=nx*impulse;b.vy+=ny*impulse;
+        }
       }
     }
   }
 }
 
-function drawObstacles() {
-  context.fillStyle = "#323a52";
-  context.strokeStyle = "#323a52";
-  context.lineWidth = 12;
-  for (const obstacle of obstacles) {
-    if (obstacle.type === "segment") {
-      context.beginPath();
-      context.moveTo(obstacle.x1, obstacle.y1);
-      context.lineTo(obstacle.x2, obstacle.y2);
-      context.stroke();
-    } else {
-      context.beginPath();
-      context.moveTo(obstacle.points[0].x, obstacle.points[0].y);
-      for (let index = 1; index < obstacle.points.length; index++) context.lineTo(obstacle.points[index].x, obstacle.points[index].y);
-      context.closePath();
-      context.fill();
-    }
+function fitText(text,maxWidth,start){
+  let size=start;
+  context.font="900 "+size+"px system-ui,sans-serif";
+  while(context.measureText(text).width>maxWidth&&size>9){
+    size-=Math.max(1,size*0.07);
+    context.font="900 "+size+"px system-ui,sans-serif";
   }
+  return size;
 }
 
-function drawScore() {
-  const text = formatScore(balls.length);
-  let size = Math.min(width * 0.29, 142);
-  do {
-    context.font = `700 ${size}px system-ui, -apple-system, sans-serif`;
-    if (context.measureText(text).width <= width * 0.93) break;
-    size -= 4;
-  } while (size > 24);
-  context.fillStyle = "#f5f8ff";
-  context.textAlign = "center";
-  context.textBaseline = "middle";
-  context.fillText(text, width / 2, playTop * 0.48, width * 0.96);
-}
-
-function draw() {
-  context.fillStyle = "#090c14";
-  context.fillRect(0, 0, width, height);
-  drawObstacles();
-  context.fillStyle = "#ffd166";
-  context.beginPath();
-  for (const ball of balls) {
-    context.moveTo(ball.x + ballRadius, ball.y);
-    context.arc(ball.x, ball.y, ballRadius, 0, Math.PI * 2);
+function draw(){
+  context.clearRect(0,0,width,height);
+  context.fillStyle="rgba(255,255,255,0.08)";context.fillRect(0,height-3,width,3);
+  for(const ball of balls){
+    context.fillStyle=ball.value>=64?"#ef6b52":ball.value>=8?"#e6a94a":"#4f86d8";
+    context.beginPath();context.arc(ball.x,ball.y,ball.r,0,Math.PI*2);context.fill();
+    const text=ball.value.toLocaleString("ja-JP"),size=fitText(text,ball.r*1.65,ball.r*0.88);
+    context.fillStyle="#0b0d12";context.textAlign="center";context.textBaseline="middle";
+    context.fillText(text,ball.x,ball.y+size*0.04);
   }
-  context.fill();
-  drawScore();
+  const scoreText=score.toLocaleString("ja-JP");
+  const size=fitText(scoreText,width*0.92,Math.min(width*0.34,190));
+  context.fillStyle="rgba(255,255,255,0.94)";
+  context.fillText(scoreText,width*0.5,height*0.42);
 }
 
-function loop(now) {
-  if (!lastFrameTime) lastFrameTime = now;
-  const dt = Math.min((now - lastFrameTime) / 1000, 0.033);
-  lastFrameTime = now;
-  if (started) update(dt);
-  draw();
-  requestAnimationFrame(loop);
+function loop(now){
+  const delta=Math.min((now-lastTime)/1000,1/30);lastTime=now;
+  update(delta);draw();requestAnimationFrame(loop);
 }
 
-canvas.addEventListener("pointerdown", event => {
+canvas.addEventListener("pointerdown",event=>{
   event.preventDefault();
-  const now = performance.now() / 1000;
-  if (now - lastTapTime <= DOUBLE_TAP_WINDOW) {
-    reset();
-    lastTapTime = -1;
-    return;
-  }
-  lastTapTime = now;
-  if (!started) launch();
+  const now=performance.now();
+  if(now-lastTap<300){reset();lastTap=0;return;}
+  lastTap=now;
+  const rect=canvas.getBoundingClientRect();
+  drop((event.clientX-rect.left)*(width/rect.width),(event.clientY-rect.top)*(height/rect.height));
 });
-canvas.addEventListener("contextmenu", event => event.preventDefault());
-
-resize();
-window.addEventListener("resize", resize);
-requestAnimationFrame(loop);
+canvas.addEventListener("contextmenu",event=>event.preventDefault());
+window.addEventListener("resize",()=>{resize();reset();});
+resize();reset();lastTime=performance.now();requestAnimationFrame(loop);
 </script>
 </body>
 </html>

@@ -1,300 +1,122 @@
 <!doctype html>
 <html lang="ja">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
-  <title>分裂アリーナ2</title>
-  <style>
-    html, body { margin: 0; height: 100%; background: #0a1015; overflow: hidden; overscroll-behavior: none; touch-action: none; user-select: none; -webkit-user-select: none; -webkit-tap-highlight-color: transparent; }
-    canvas { display: block; width: 100vw; height: 100vh; height: 100dvh; background: #0a1015; }
-  </style>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<title>ペグ落下</title>
+<style>
+html,body{margin:0;height:100%;background:#080f14;overflow:hidden;overscroll-behavior:none;touch-action:none;user-select:none;-webkit-user-select:none;-webkit-tap-highlight-color:transparent}
+canvas{display:block;width:100vw;height:100vh;height:100dvh;background:#080f14}
+</style>
 </head>
 <body>
 <canvas id="game"></canvas>
 <script>
 "use strict";
+const canvas=document.getElementById("game"),context=canvas.getContext("2d",{alpha:false});
+let width=393,height=852,dpr=1;
+const balls=[],pegs=[],trays=[];
+let score=0,lastTap=0,lastTime=0,spawnTimer=0;
 
-const canvas = document.getElementById("game");
-const context = canvas.getContext("2d", { alpha: false });
-const BASE_BALL_RADIUS = 9;
-const MAX_BALLS = 2200;
-const COOLDOWN = 0.5;
-const GRAVITY = 95;
-const LAUNCH_SPEED = 205;
-const RESTITUTION = 0.84;
-const FRICTION = 0.992;
-const MAX_SPEED = 500;
-const DOUBLE_TAP_WINDOW = 0.32;
-
-let width = 0;
-let height = 0;
-let ballRadius = BASE_BALL_RADIUS;
-let playTop = 0;
-let obstacles = [];
-let balls = [];
-let started = false;
-let lastTapTime = -1;
-let lastFrameTime = 0;
-
-function formatScore(value) {
-  return String(value).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+function resize(){
+  dpr=Math.min(window.devicePixelRatio||1,2);
+  width=Math.max(1,canvas.clientWidth||window.innerWidth);
+  height=Math.max(1,canvas.clientHeight||window.innerHeight);
+  canvas.width=Math.floor(width*dpr);canvas.height=Math.floor(height*dpr);
+  context.setTransform(dpr,0,0,dpr,0,0);
 }
 
-function addObstacle(obstacle) {
-  obstacle.minX = obstacle.cx - obstacle.radius;
-  obstacle.maxX = obstacle.cx + obstacle.radius;
-  obstacle.minY = obstacle.cy - obstacle.radius;
-  obstacle.maxY = obstacle.cy + obstacle.radius;
-  obstacles.push(obstacle);
-}
-
-function buildBoard() {
-  obstacles = [];
-  const rows = 5;
-  const columns = 3;
-  const top = playTop + 48;
-  const bottom = height - 48;
-  const cellWidth = width / columns;
-  const cellHeight = Math.max(110, bottom - top) / rows;
-  const size = Math.min(cellWidth, cellHeight) * 0.32;
-  for (let row = 0; row < rows; row++) {
-    for (let column = 0; column < columns; column++) {
-      const cx = (column + 0.5) * cellWidth;
-      const cy = top + (row + 0.5) * cellHeight;
-      const up = (row + column) % 2 === 0;
-      const points = up ? [
-        { x: cx, y: cy - size },
-        { x: cx + size * 0.88, y: cy + size * 0.58 },
-        { x: cx - size * 0.88, y: cy + size * 0.58 }
-      ] : [
-        { x: cx - size * 0.88, y: cy - size * 0.58 },
-        { x: cx + size * 0.88, y: cy - size * 0.58 },
-        { x: cx, y: cy + size }
-      ];
-      addObstacle({ type: "polygon", cx, cy, radius: size, points });
-    }
+function reset(){
+  balls.length=0;pegs.length=0;trays.length=0;score=0;spawnTimer=0;
+  const rows=6,cols=5,padding=width*0.08,stepX=(width-padding*2)/(cols-1),stepY=height*0.065;
+  for(let row=0;row<rows;row++)for(let col=0;col<cols;col++){
+    const x=padding+col*stepX+(row%2?stepX*0.5:0);
+    if(x>width-padding)continue;
+    pegs.push({x,y:height*0.22+row*stepY,r:Math.max(6,width*0.016),hit:0});
   }
+  const values=[1,2,3,5,10,20,50],trayW=width/values.length,trayH=height*0.07;
+  values.forEach((value,index)=>trays.push({x:index*trayW,y:height-trayH,w:trayW,h:trayH,value}));
 }
 
-function resize() {
-  const dpr = Math.min(window.devicePixelRatio || 1, 2);
-  width = Math.max(1, canvas.clientWidth || window.innerWidth);
-  height = Math.max(1, canvas.clientHeight || window.innerHeight);
-  canvas.width = Math.floor(width * dpr);
-  canvas.height = Math.floor(height * dpr);
-  context.setTransform(dpr, 0, 0, dpr, 0, 0);
-  ballRadius = Math.max(BASE_BALL_RADIUS, Math.min(width * 0.024, 12));
-  playTop = Math.max(108, Math.min(height * 0.18, 170));
-  buildBoard();
-  for (const ball of balls) {
-    ball.x = Math.min(Math.max(ball.x, ballRadius), width - ballRadius);
-    ball.y = Math.min(Math.max(ball.y, playTop + ballRadius), height - ballRadius);
-  }
+function spawn(){
+  if(balls.length>=500)return;
+  balls.push({x:width*(0.25+Math.random()*0.5),y:-10,r:Math.max(6,width*0.015),vx:(Math.random()-0.5)*40,vy:70});
 }
 
-function reset() {
-  balls = [];
-  started = false;
-}
-
-function launch() {
-  const angle = -Math.PI / 4 + Math.random() * Math.PI / 2;
-  balls.push({
-    x: width / 2,
-    y: playTop + (height - playTop) / 2,
-    vx: Math.cos(angle) * LAUNCH_SPEED,
-    vy: Math.sin(angle) * LAUNCH_SPEED,
-    cooldown: COOLDOWN
-  });
-  started = true;
-}
-
-function closestPointOnSegment(x, y, x1, y1, x2, y2) {
-  const dx = x2 - x1;
-  const dy = y2 - y1;
-  const lengthSquared = dx * dx + dy * dy;
-  const t = lengthSquared === 0 ? 0 : Math.min(1, Math.max(0, ((x - x1) * dx + (y - y1) * dy) / lengthSquared));
-  return { x: x1 + dx * t, y: y1 + dy * t };
-}
-
-function pointInPolygon(x, y, points) {
-  let inside = false;
-  for (let i = 0, j = points.length - 1; i < points.length; j = i++) {
-    if ((points[i].y > y) !== (points[j].y > y) &&
-        x < (points[j].x - points[i].x) * (y - points[i].y) / (points[j].y - points[i].y) + points[i].x) inside = !inside;
-  }
-  return inside;
-}
-
-function applyNormal(ball, normalX, normalY, overlap) {
-  ball.x += normalX * overlap;
-  ball.y += normalY * overlap;
-  const normalVelocity = ball.vx * normalX + ball.vy * normalY;
-  if (normalVelocity < 0) {
-    const tangentX = -normalY;
-    const tangentY = normalX;
-    const tangentVelocity = ball.vx * tangentX + ball.vy * tangentY;
-    const nextNormalVelocity = -normalVelocity * RESTITUTION;
-    ball.vx = (tangentX * tangentVelocity + normalX * nextNormalVelocity) * FRICTION;
-    ball.vy = (tangentY * tangentVelocity + normalY * nextNormalVelocity) * FRICTION;
-  }
-}
-
-function collideObstacle(ball, obstacle) {
-  if (ball.x + ballRadius < obstacle.minX || ball.x - ballRadius > obstacle.maxX ||
-      ball.y + ballRadius < obstacle.minY || ball.y - ballRadius > obstacle.maxY) return null;
-
-  let nearest = null;
-  let nearestDistance = Infinity;
-  for (let i = 0, j = obstacle.points.length - 1; i < obstacle.points.length; j = i++) {
-    const point = closestPointOnSegment(ball.x, ball.y, obstacle.points[j].x, obstacle.points[j].y, obstacle.points[i].x, obstacle.points[i].y);
-    const distance = Math.hypot(ball.x - point.x, ball.y - point.y);
-    if (distance < nearestDistance) {
-      nearestDistance = distance;
-      nearest = point;
-    }
-  }
-  if (nearestDistance === 0) return null;
-
-  const dx = ball.x - nearest.x;
-  const dy = ball.y - nearest.y;
-  let normalX = dx / nearestDistance;
-  let normalY = dy / nearestDistance;
-  if (pointInPolygon(ball.x, ball.y, obstacle.points)) {
-    normalX = -normalX;
-    normalY = -normalY;
-    applyNormal(ball, normalX, normalY, ballRadius + nearestDistance);
-  } else {
-    if (nearestDistance >= ballRadius) return null;
-    applyNormal(ball, normalX, normalY, ballRadius - nearestDistance);
-  }
-  return { x: normalX, y: normalY };
-}
-
-function split(parent, normalX, normalY) {
-  if (parent.cooldown > 0 || balls.length >= MAX_BALLS) return;
-  const childX = parent.x + normalX * ballRadius * 2.2;
-  const childY = parent.y + normalY * ballRadius * 2.2;
-  if (childX < ballRadius || childX > width - ballRadius || childY < playTop + ballRadius || childY > height - ballRadius) return;
-  balls.push({
-    x: childX,
-    y: childY,
-    vx: parent.vx * 0.45 + normalX * 45,
-    vy: parent.vy * 0.45 + normalY * 45,
-    cooldown: COOLDOWN
-  });
-  parent.cooldown = COOLDOWN;
-}
-
-function collideWalls(ball) {
-  if (ball.x < ballRadius) {
-    ball.x = ballRadius;
-    ball.vx = Math.abs(ball.vx) * RESTITUTION;
-    split(ball, 1, 0);
-  } else if (ball.x > width - ballRadius) {
-    ball.x = width - ballRadius;
-    ball.vx = -Math.abs(ball.vx) * RESTITUTION;
-    split(ball, -1, 0);
-  }
-  if (ball.y < playTop + ballRadius) {
-    ball.y = playTop + ballRadius;
-    ball.vy = Math.abs(ball.vy) * RESTITUTION;
-    split(ball, 0, 1);
-  } else if (ball.y > height - ballRadius) {
-    ball.y = height - ballRadius;
-    ball.vy = -Math.abs(ball.vy) * RESTITUTION;
-    split(ball, 0, -1);
-  }
-}
-
-function update(dt) {
-  for (const ball of balls) ball.cooldown = Math.max(0, ball.cooldown - dt);
-  const steps = 3;
-  const stepTime = dt / steps;
-  for (let step = 0; step < steps; step++) {
-    for (let index = 0; index < balls.length; index++) {
-      const ball = balls[index];
-      ball.vy += GRAVITY * stepTime;
-      const speed = Math.hypot(ball.vx, ball.vy);
-      if (speed > MAX_SPEED) {
-        ball.vx *= MAX_SPEED / speed;
-        ball.vy *= MAX_SPEED / speed;
-      }
-      ball.x += ball.vx * stepTime;
-      ball.y += ball.vy * stepTime;
-      collideWalls(ball);
-      for (const obstacle of obstacles) {
-        const normal = collideObstacle(ball, obstacle);
-        if (normal) split(ball, normal.x, normal.y);
+function update(delta){
+  spawnTimer-=delta;
+  if(spawnTimer<=0){spawn();spawnTimer=0.55;}
+  for(let i=balls.length-1;i>=0;i--){
+    const ball=balls[i];
+    ball.vy+=300*delta;ball.x+=ball.vx*delta;ball.y+=ball.vy*delta;
+    if(ball.x-ball.r<0){ball.x=ball.r;ball.vx=Math.abs(ball.vx);}
+    if(ball.x+ball.r>width){ball.x=width-ball.r;ball.vx=-Math.abs(ball.vx);}
+    for(const peg of pegs){
+      const dx=ball.x-peg.x,dy=ball.y-peg.y,distance=Math.hypot(dx,dy),sum=ball.r+peg.r;
+      if(distance<sum&&distance>0){
+        const nx=dx/distance,ny=dy/distance;
+        ball.x=peg.x+nx*sum;ball.y=peg.y+ny*sum;
+        const dot=ball.vx*nx+ball.vy*ny;
+        if(dot<0){ball.vx-=1.75*dot*nx;ball.vy-=1.75*dot*ny;}
+        if(peg.hit<=0){
+          peg.hit=0.12;
+          if(balls.length<500)balls.push({x:ball.x,y:ball.y,r:ball.r,vx:-ball.vx*0.35,vy:Math.min(ball.vy,60)});
+        }
       }
     }
+    if(ball.y+ball.r>=height){
+      const tray=trays.find(item=>ball.x>=item.x&&ball.x<item.x+item.w);
+      if(tray)score+=tray.value;
+      balls.splice(i,1);
+    }
   }
+  for(const peg of pegs)if(peg.hit>0)peg.hit-=delta;
 }
 
-function drawObstacles() {
-  context.fillStyle = "#29443c";
-  for (const obstacle of obstacles) {
-    context.beginPath();
-    context.moveTo(obstacle.points[0].x, obstacle.points[0].y);
-    for (let index = 1; index < obstacle.points.length; index++) context.lineTo(obstacle.points[index].x, obstacle.points[index].y);
-    context.closePath();
-    context.fill();
+function drawNumber(value){
+  const text=value.toLocaleString("ja-JP");
+  let size=Math.min(width*0.32,170);
+  context.font="900 "+size+"px system-ui,sans-serif";
+  while(context.measureText(text).width>width*0.92&&size>18){
+    size-=Math.max(2,size*0.06);
+    context.font="900 "+size+"px system-ui,sans-serif";
   }
+  context.textAlign="center";context.textBaseline="middle";
+  context.fillStyle="rgba(255,255,255,0.93)";
+  context.fillText(text,width*0.5,height*0.45);
 }
 
-function drawScore() {
-  const text = formatScore(balls.length);
-  let size = Math.min(width * 0.29, 142);
-  do {
-    context.font = `700 ${size}px system-ui, -apple-system, sans-serif`;
-    if (context.measureText(text).width <= width * 0.93) break;
-    size -= 4;
-  } while (size > 24);
-  context.fillStyle = "#f2fbf7";
-  context.textAlign = "center";
-  context.textBaseline = "middle";
-  context.fillText(text, width / 2, playTop * 0.48, width * 0.96);
-}
-
-function draw() {
-  context.fillStyle = "#0a1015";
-  context.fillRect(0, 0, width, height);
-  drawObstacles();
-  context.fillStyle = "#77f2b0";
-  context.beginPath();
-  for (const ball of balls) {
-    context.moveTo(ball.x + ballRadius, ball.y);
-    context.arc(ball.x, ball.y, ballRadius, 0, Math.PI * 2);
+function draw(){
+  context.clearRect(0,0,width,height);
+  for(const tray of trays){
+    context.fillStyle=tray.value>=20?"#d94c5f":tray.value>=5?"#e0a23b":"#31536d";
+    context.fillRect(tray.x,tray.y,tray.w-2,tray.h);
+    context.fillStyle="#eaf3ff";
+    context.font="800 "+Math.max(12,width*0.038)+"px system-ui,sans-serif";
+    context.textAlign="center";context.textBaseline="middle";
+    context.fillText("×"+tray.value,tray.x+tray.w/2,tray.y+tray.h/2);
   }
-  context.fill();
-  drawScore();
+  context.fillStyle="#eaf3ff";
+  for(const peg of pegs){context.beginPath();context.arc(peg.x,peg.y,peg.r,0,Math.PI*2);context.fill();}
+  context.fillStyle="#7ee3ff";
+  for(const ball of balls){context.beginPath();context.arc(ball.x,ball.y,ball.r,0,Math.PI*2);context.fill();}
+  drawNumber(score);
 }
 
-function loop(now) {
-  if (!lastFrameTime) lastFrameTime = now;
-  const dt = Math.min((now - lastFrameTime) / 1000, 0.033);
-  lastFrameTime = now;
-  if (started) update(dt);
-  draw();
-  requestAnimationFrame(loop);
+function loop(now){
+  const delta=Math.min((now-lastTime)/1000,1/30);lastTime=now;
+  update(delta);draw();requestAnimationFrame(loop);
 }
 
-canvas.addEventListener("pointerdown", event => {
+canvas.addEventListener("pointerdown",event=>{
   event.preventDefault();
-  const now = performance.now() / 1000;
-  if (now - lastTapTime <= DOUBLE_TAP_WINDOW) {
-    reset();
-    lastTapTime = -1;
-    return;
-  }
-  lastTapTime = now;
-  if (!started) launch();
+  const now=performance.now();
+  if(now-lastTap<300){reset();lastTap=0;return;}
+  lastTap=now;
 });
-canvas.addEventListener("contextmenu", event => event.preventDefault());
-
-resize();
-window.addEventListener("resize", resize);
-requestAnimationFrame(loop);
+canvas.addEventListener("contextmenu",event=>event.preventDefault());
+window.addEventListener("resize",()=>{resize();reset();});
+resize();reset();lastTime=performance.now();requestAnimationFrame(loop);
 </script>
 </body>
 </html>
