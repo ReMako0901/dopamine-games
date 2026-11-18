@@ -1,0 +1,307 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+  <title>連鎖爆発4</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: #0a0c12; overflow: hidden; overscroll-behavior: none; touch-action: none; user-select: none; -webkit-user-select: none; -webkit-tap-highlight-color: transparent; }
+    canvas { display: block; width: 100vw; height: 100vh; height: 100dvh; background: #0a0c12; }
+  </style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<script>
+"use strict";
+
+const canvas = document.getElementById("game");
+const context = canvas.getContext("2d", { alpha: false });
+const BALL_COUNT = 100;
+const BALL_RADIUS = 8;
+const GRAVITY = 70;
+const SPEED = 75;
+const RESTITUTION = 0.82;
+const BOUNCE_BOOST = 0;
+const MAX_SPEED = 780;
+const EXPLOSION_RADIUS = 68;
+const SPAWN_COOLDOWN = 0.3;
+const FEVER_ENABLED = false;
+const FEVER_DURATION = 10;
+const FEVER_MIN = 12;
+const FEVER_MAX = 20;
+const SCORE_MULTIPLIER = 2;
+const CHAIN_DELAY = 0.09;
+const DOUBLE_TAP_WINDOW = 0.32;
+const TAP_SLOP = 14;
+
+let width = 0;
+let height = 0;
+let balls = [];
+let effects = [];
+let chain = null;
+let score = 0;
+let spawnTimer = 0;
+let lastTapTime = -1;
+let lastFrameTime = 0;
+let feverActive = false;
+let feverTimer = 0;
+let nextFever = FEVER_MIN + Math.random() * (FEVER_MAX - FEVER_MIN);
+
+function formatScore(value) {
+  return String(Math.floor(value)).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+}
+
+function createBall() {
+  const radius = BALL_RADIUS + 3;
+  return {
+    x: radius + Math.random() * Math.max(1, width - radius * 2),
+    y: radius + Math.random() * Math.max(1, height - radius * 2),
+    vx: (Math.random() * 2 - 1) * SPEED,
+    vy: (Math.random() * 2 - 1) * SPEED,
+    alive: true
+  };
+}
+
+function reset() {
+  balls = [];
+  effects = [];
+  chain = null;
+  score = 0;
+  spawnTimer = 0;
+  feverActive = false;
+  feverTimer = 0;
+  nextFever = FEVER_MIN + Math.random() * (FEVER_MAX - FEVER_MIN);
+  for (let index = 0; index < BALL_COUNT; index++) balls.push(createBall());
+}
+
+function resize() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  width = Math.max(1, canvas.clientWidth || window.innerWidth);
+  height = Math.max(1, canvas.clientHeight || window.innerHeight);
+  canvas.width = Math.floor(width * dpr);
+  canvas.height = Math.floor(height * dpr);
+  context.setTransform(dpr, 0, 0, dpr, 0, 0);
+  for (const ball of balls) {
+    ball.x = Math.min(Math.max(ball.x, BALL_RADIUS), width - BALL_RADIUS);
+    ball.y = Math.min(Math.max(ball.y, BALL_RADIUS), height - BALL_RADIUS);
+  }
+}
+
+function updateBall(ball, dt) {
+  ball.vy += GRAVITY * dt;
+  ball.x += ball.vx * dt;
+  ball.y += ball.vy * dt;
+
+  if (ball.x < BALL_RADIUS) {
+    ball.x = BALL_RADIUS;
+    ball.vx = Math.abs(ball.vx) * RESTITUTION;
+  } else if (ball.x > width - BALL_RADIUS) {
+    ball.x = width - BALL_RADIUS;
+    ball.vx = -Math.abs(ball.vx) * RESTITUTION;
+  }
+
+  if (ball.y < BALL_RADIUS) {
+    ball.y = BALL_RADIUS;
+    ball.vy = Math.abs(ball.vy) * RESTITUTION + BOUNCE_BOOST;
+  } else if (ball.y > height - BALL_RADIUS) {
+    ball.y = height - BALL_RADIUS;
+    ball.vy = -Math.abs(ball.vy) * RESTITUTION - BOUNCE_BOOST;
+  }
+
+  const speed = Math.hypot(ball.vx, ball.vy);
+  if (speed > MAX_SPEED) {
+    ball.vx *= MAX_SPEED / speed;
+    ball.vy *= MAX_SPEED / speed;
+  }
+}
+
+function addEffect(x, y) {
+  effects.push({ x, y, life: 0.24, duration: 0.24, radius: BALL_RADIUS * 2.4 });
+  if (effects.length > 36) effects.shift();
+}
+
+function explodeBall(ball) {
+  ball.alive = false;
+  addEffect(ball.x, ball.y);
+}
+
+function findTapBall(x, y) {
+  for (const ball of balls) {
+    if (!ball.alive) continue;
+    if (Math.hypot(ball.x - x, ball.y - y) <= BALL_RADIUS + TAP_SLOP) return ball;
+  }
+  return null;
+}
+
+function startChain(ball) {
+  if (chain) return;
+  for (const current of balls) current.eligible = current.alive;
+  explodeBall(ball);
+  chain = {
+    count: 1,
+    depth: 1,
+    timer: CHAIN_DELAY,
+    sources: [{ x: ball.x, y: ball.y }]
+  };
+}
+
+function finishChain() {
+  score += chain.count * chain.depth * SCORE_MULTIPLIER;
+  chain = null;
+}
+
+function updateChain(dt) {
+  if (!chain) return;
+  chain.timer -= dt;
+  while (chain.timer <= 0) {
+    const nextSources = [];
+    for (const ball of balls) {
+      if (!ball.alive || !ball.eligible) continue;
+      for (const source of chain.sources) {
+        if (Math.hypot(ball.x - source.x, ball.y - source.y) <= EXPLOSION_RADIUS) {
+          explodeBall(ball);
+          nextSources.push({ x: ball.x, y: ball.y });
+          break;
+        }
+      }
+    }
+    if (nextSources.length === 0) {
+      finishChain();
+      return;
+    }
+    chain.count += nextSources.length;
+    chain.depth++;
+    chain.sources = nextSources;
+    chain.timer += CHAIN_DELAY;
+  }
+}
+
+function updateFever(dt) {
+  if (!FEVER_ENABLED) return;
+  if (feverActive) {
+    feverTimer -= dt;
+    if (feverTimer <= 0) {
+      feverActive = false;
+      nextFever = FEVER_MIN + Math.random() * (FEVER_MAX - FEVER_MIN);
+    }
+  } else {
+    nextFever -= dt;
+    if (nextFever <= 0) {
+      feverActive = true;
+      feverTimer = FEVER_DURATION;
+    }
+  }
+}
+
+function updateSpawns(dt) {
+  let aliveCount = 0;
+  for (const ball of balls) if (ball.alive) aliveCount++;
+  if (aliveCount >= BALL_COUNT) return;
+
+  const cooldown = SPAWN_COOLDOWN / (feverActive ? 3 : 1);
+  spawnTimer -= dt;
+  while (spawnTimer <= 0 && aliveCount < BALL_COUNT) {
+    const deadBall = balls.find(ball => !ball.alive);
+    if (deadBall) {
+      const replacement = createBall();
+      deadBall.x = replacement.x;
+      deadBall.y = replacement.y;
+      deadBall.vx = replacement.vx;
+      deadBall.vy = replacement.vy;
+      deadBall.alive = true;
+    } else {
+      balls.push(createBall());
+    }
+    aliveCount++;
+    spawnTimer += cooldown;
+  }
+}
+
+function updateEffects(dt) {
+  for (const effect of effects) effect.life -= dt;
+  effects = effects.filter(effect => effect.life > 0);
+}
+
+function update(dt) {
+  updateFever(dt);
+  for (const ball of balls) if (ball.alive) updateBall(ball, dt);
+  updateChain(dt);
+  updateSpawns(dt);
+  updateEffects(dt);
+}
+
+function drawScore() {
+  const text = formatScore(score);
+  let size = Math.min(width * 0.3, height * 0.18, 168);
+  context.textAlign = "center";
+  context.textBaseline = "middle";
+  context.font = "900 " + size + "px system-ui, -apple-system, sans-serif";
+  const measuredWidth = context.measureText(text).width;
+  if (measuredWidth > width * 0.94) {
+    size *= (width * 0.94) / measuredWidth * 0.98;
+    context.font = "900 " + size + "px system-ui, -apple-system, sans-serif";
+  }
+  context.fillStyle = feverActive ? "#ffe066" : "#f6f8ff";
+  context.fillText(text, width / 2, Math.max(58, Math.min(height * 0.11, 92)));
+}
+
+function draw() {
+  context.fillStyle = feverActive ? "#181020" : "#0a0c12";
+  context.fillRect(0, 0, width, height);
+
+  context.fillStyle = feverActive ? "#ffd166" : "#69dbff";
+  context.beginPath();
+  for (const ball of balls) {
+    if (!ball.alive) continue;
+    context.moveTo(ball.x + BALL_RADIUS, ball.y);
+    context.arc(ball.x, ball.y, BALL_RADIUS, 0, Math.PI * 2);
+  }
+  context.fill();
+
+  for (const effect of effects) {
+    const progress = 1 - effect.life / effect.duration;
+    context.globalAlpha = Math.max(0, effect.life / effect.duration);
+    context.fillStyle = feverActive ? "#ff8ac4" : "#ff6b6b";
+    context.beginPath();
+    context.arc(effect.x, effect.y, effect.radius + progress * EXPLOSION_RADIUS * 0.22, 0, Math.PI * 2);
+    context.fill();
+  }
+  context.globalAlpha = 1;
+
+  drawScore();
+}
+
+function loop(now) {
+  if (!lastFrameTime) lastFrameTime = now;
+  const dt = Math.min((now - lastFrameTime) / 1000, 1 / 30);
+  lastFrameTime = now;
+  update(dt);
+  draw();
+  requestAnimationFrame(loop);
+}
+
+canvas.addEventListener("pointerdown", event => {
+  event.preventDefault();
+  const now = performance.now() / 1000;
+  if (now - lastTapTime <= DOUBLE_TAP_WINDOW) {
+    reset();
+    lastTapTime = -1;
+    return;
+  }
+  lastTapTime = now;
+  const rect = canvas.getBoundingClientRect();
+  const x = event.clientX - rect.left;
+  const y = event.clientY - rect.top;
+  const ball = findTapBall(x, y);
+  if (ball && !chain) startChain(ball);
+});
+canvas.addEventListener("contextmenu", event => event.preventDefault());
+window.addEventListener("resize", resize);
+window.addEventListener("orientationchange", () => setTimeout(resize, 80));
+
+resize();
+reset();
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
