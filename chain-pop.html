@@ -1,0 +1,355 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+  <title>CHAIN POP</title>
+  <style>
+    html, body {
+      margin: 0;
+      height: 100%;
+      background: #0a0a10;
+      overflow: hidden;
+      overscroll-behavior: none;
+      touch-action: none;
+      -webkit-user-select: none;
+      user-select: none;
+      -webkit-tap-highlight-color: transparent;
+    }
+    canvas {
+      display: block;
+      width: 100vw;
+      height: 100dvh;
+      background: #0a0a10;
+    }
+  </style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<script>
+"use strict";
+
+const canvas = document.getElementById("game");
+const context = canvas.getContext("2d", { alpha: false });
+
+const TARGET_BALLS = 60;
+const CHAIN_STEP = 0.09;
+const CHAIN_HOLD = 0.45;
+const DOUBLE_TAP_WINDOW = 0.32;
+const BALL_COLORS = ["#2f80ed", "#f2994a", "#eb5757", "#27ae60", "#9b51e0"];
+const BALL_TEXT_COLORS = ["#ffffff", "#151515", "#ffffff", "#ffffff", "#ffffff"];
+
+let width = 0;
+let height = 0;
+let ballRadius = 24;
+let blastRadius = 105;
+let balls = [];
+let pending = [];
+let rings = [];
+let flashes = [];
+let score = 0;
+let chainCount = 0;
+let chainHold = 0;
+let lastTapTime = -1;
+let lastFrameTime = 0;
+
+function formatScore(value) {
+  return String(value).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+}
+
+function resize() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  width = Math.max(1, canvas.clientWidth || window.innerWidth);
+  height = Math.max(1, canvas.clientHeight || window.innerHeight);
+  canvas.width = Math.floor(width * dpr);
+  canvas.height = Math.floor(height * dpr);
+  context.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+  ballRadius = Math.max(20, Math.min(27, width * 0.062));
+  blastRadius = Math.max(85, Math.min(130, width * 0.27));
+
+  for (const ball of balls) {
+    ball.x = Math.min(Math.max(ball.x, ballRadius), width - ballRadius);
+    ball.y = Math.min(Math.max(ball.y, ballRadius), height - ballRadius);
+  }
+}
+
+function makeBall(x, y, vx, vy) {
+  return {
+    x,
+    y,
+    vx,
+    vy,
+    generation: 1,
+    queued: false
+  };
+}
+
+function buildInitialBalls() {
+  balls = [];
+  for (let index = 0; index < TARGET_BALLS; index++) {
+    const x = ballRadius + Math.random() * Math.max(1, width - ballRadius * 2);
+    const y = ballRadius + Math.random() * Math.max(1, height - ballRadius * 2);
+    const angle = Math.random() * Math.PI * 2;
+    const speed = 14 + Math.random() * 18;
+    balls.push(makeBall(x, y, Math.cos(angle) * speed, Math.sin(angle) * speed));
+  }
+}
+
+function spawnEdgeBall() {
+  const side = Math.floor(Math.random() * 4);
+  const speed = 16 + Math.random() * 18;
+  let x;
+  let y;
+  let vx;
+  let vy;
+
+  if (side === 0) {
+    x = -ballRadius;
+    y = ballRadius + Math.random() * Math.max(1, height - ballRadius * 2);
+    vx = speed;
+    vy = (Math.random() - 0.5) * 18;
+  } else if (side === 1) {
+    x = width + ballRadius;
+    y = ballRadius + Math.random() * Math.max(1, height - ballRadius * 2);
+    vx = -speed;
+    vy = (Math.random() - 0.5) * 18;
+  } else if (side === 2) {
+    x = ballRadius + Math.random() * Math.max(1, width - ballRadius * 2);
+    y = -ballRadius;
+    vx = (Math.random() - 0.5) * 18;
+    vy = speed;
+  } else {
+    x = ballRadius + Math.random() * Math.max(1, width - ballRadius * 2);
+    y = height + ballRadius;
+    vx = (Math.random() - 0.5) * 18;
+    vy = -speed;
+  }
+
+  balls.push(makeBall(x, y, vx, vy));
+}
+
+function enqueueExplosion(ball, depth, timer) {
+  if (ball.queued) return;
+  ball.queued = true;
+  ball.generation = depth;
+  chainHold = 0;
+  pending.push({ ball, depth, timer });
+}
+
+function popBall(ball, depth) {
+  const index = balls.indexOf(ball);
+  if (index === -1) return;
+
+  balls.splice(index, 1);
+  score += ball.generation * depth;
+  chainCount++;
+
+  const color = BALL_COLORS[(ball.generation - 1) % BALL_COLORS.length];
+  flashes.push({ x: ball.x, y: ball.y, radius: ballRadius * 1.75, elapsed: 0, duration: 0.09 });
+  rings.push({ x: ball.x, y: ball.y, elapsed: 0, duration: 0.34, color });
+
+  for (const other of balls) {
+    if (other.queued) continue;
+    const dx = other.x - ball.x;
+    const dy = other.y - ball.y;
+    if (dx * dx + dy * dy <= blastRadius * blastRadius) {
+      enqueueExplosion(other, depth + 1, CHAIN_STEP);
+    }
+  }
+}
+
+function cancelActiveChain() {
+  for (const item of pending) {
+    item.ball.queued = false;
+    item.ball.generation = 1;
+  }
+  pending.length = 0;
+  chainCount = 0;
+  chainHold = 0;
+}
+
+function handleTap(clientX, clientY) {
+  const rect = canvas.getBoundingClientRect();
+  const x = (clientX - rect.left) * (width / Math.max(1, rect.width));
+  const y = (clientY - rect.top) * (height / Math.max(1, rect.height));
+  const now = performance.now() / 1000;
+
+  if (lastTapTime >= 0 && now - lastTapTime <= DOUBLE_TAP_WINDOW) {
+    score = 0;
+    cancelActiveChain();
+    lastTapTime = -1;
+    return;
+  }
+
+  lastTapTime = now;
+  let target = null;
+  let nearestDistance = Infinity;
+
+  for (const ball of balls) {
+    const dx = ball.x - x;
+    const dy = ball.y - y;
+    const distance = dx * dx + dy * dy;
+    if (distance <= (ballRadius + 10) * (ballRadius + 10) && distance < nearestDistance) {
+      nearestDistance = distance;
+      target = ball;
+    }
+  }
+
+  if (target) enqueueExplosion(target, 1, 0);
+}
+
+function update(dt) {
+  for (const ball of balls) {
+    ball.x += ball.vx * dt;
+    ball.y += ball.vy * dt;
+
+    if (ball.x < ballRadius) {
+      ball.x = ballRadius;
+      ball.vx = Math.abs(ball.vx);
+    } else if (ball.x > width - ballRadius) {
+      ball.x = width - ballRadius;
+      ball.vx = -Math.abs(ball.vx);
+    }
+
+    if (ball.y < ballRadius) {
+      ball.y = ballRadius;
+      ball.vy = Math.abs(ball.vy);
+    } else if (ball.y > height - ballRadius) {
+      ball.y = height - ballRadius;
+      ball.vy = -Math.abs(ball.vy);
+    }
+  }
+
+  for (let index = pending.length - 1; index >= 0; index--) {
+    const item = pending[index];
+    item.timer -= dt;
+    if (item.timer <= 0) {
+      pending.splice(index, 1);
+      popBall(item.ball, item.depth);
+    }
+  }
+
+  if (pending.length === 0) {
+    let spawnBudget = 2;
+    while (balls.length < TARGET_BALLS && spawnBudget > 0) {
+      spawnEdgeBall();
+      spawnBudget--;
+    }
+
+    if (chainCount > 0) {
+      if (chainHold === 0) chainHold = CHAIN_HOLD;
+      chainHold -= dt;
+      if (chainHold <= 0) {
+        chainCount = 0;
+        chainHold = 0;
+      }
+    }
+  }
+
+  for (let index = flashes.length - 1; index >= 0; index--) {
+    const flash = flashes[index];
+    flash.elapsed += dt;
+    if (flash.elapsed >= flash.duration) flashes.splice(index, 1);
+  }
+
+  for (let index = rings.length - 1; index >= 0; index--) {
+    const ring = rings[index];
+    ring.elapsed += dt;
+    if (ring.elapsed >= ring.duration) rings.splice(index, 1);
+  }
+}
+
+function fitFont(text, maxWidth, startSize, minSize) {
+  context.font = `900 ${startSize}px system-ui, -apple-system, sans-serif`;
+  const measured = context.measureText(text).width;
+  if (measured <= maxWidth || measured === 0) return startSize;
+  return Math.max(minSize, startSize * (maxWidth / measured));
+}
+
+function drawBallLabel(ball) {
+  const text = String(ball.generation);
+  let fontSize = Math.max(15, ballRadius * 0.78);
+  const maxWidth = ballRadius * 1.35;
+  context.font = `900 ${fontSize}px system-ui, -apple-system, sans-serif`;
+  const measured = context.measureText(text).width;
+  if (measured > maxWidth) fontSize = Math.max(9, fontSize * (maxWidth / measured));
+  context.font = `900 ${fontSize}px system-ui, -apple-system, sans-serif`;
+  context.textAlign = "center";
+  context.textBaseline = "middle";
+  context.fillStyle = BALL_TEXT_COLORS[(ball.generation - 1) % BALL_TEXT_COLORS.length];
+  context.fillText(text, ball.x, ball.y + 1);
+}
+
+function draw() {
+  context.fillStyle = "#0a0a10";
+  context.fillRect(0, 0, width, height);
+
+  for (const ball of balls) {
+    context.beginPath();
+    context.arc(ball.x, ball.y, ballRadius, 0, Math.PI * 2);
+    context.fillStyle = BALL_COLORS[(ball.generation - 1) % BALL_COLORS.length];
+    context.fill();
+    drawBallLabel(ball);
+  }
+
+  for (const flash of flashes) {
+    const progress = flash.elapsed / flash.duration;
+    context.globalAlpha = 1 - progress;
+    context.beginPath();
+    context.arc(flash.x, flash.y, flash.radius * (1 + progress * 0.25), 0, Math.PI * 2);
+    context.fillStyle = "#ffffff";
+    context.fill();
+  }
+  context.globalAlpha = 1;
+
+  for (const ring of rings) {
+    const progress = ring.elapsed / ring.duration;
+    context.globalAlpha = 1 - progress;
+    context.beginPath();
+    context.arc(ring.x, ring.y, ballRadius + progress * blastRadius, 0, Math.PI * 2);
+    context.lineWidth = Math.max(2, 5 * (1 - progress));
+    context.strokeStyle = ring.color;
+    context.stroke();
+  }
+  context.globalAlpha = 1;
+
+  const scoreText = formatScore(score);
+  const scoreSize = fitFont(scoreText, width * 0.9, Math.min(height * 0.16, 118), 10);
+  context.font = `900 ${scoreSize}px system-ui, -apple-system, sans-serif`;
+  context.textAlign = "center";
+  context.textBaseline = "middle";
+  context.fillStyle = "#ffffff";
+  context.fillText(scoreText, width / 2, Math.max(scoreSize * 0.62, 48));
+
+  if (chainCount > 0) {
+    const chainText = `${chainCount} CHAIN`;
+    const chainSize = fitFont(chainText, width * 0.72, Math.min(50, height * 0.062), 18);
+    context.font = `900 ${chainSize}px system-ui, -apple-system, sans-serif`;
+    context.fillStyle = "#f2994a";
+    const scoreY = Math.max(scoreSize * 0.62, 48);
+    context.fillText(chainText, width / 2, scoreY + Math.max(28, scoreSize * 0.68));
+  }
+}
+
+function frame(time) {
+  const dt = Math.min(0.05, Math.max(0, (time - lastFrameTime) / 1000));
+  lastFrameTime = time;
+  update(dt);
+  draw();
+  requestAnimationFrame(frame);
+}
+
+canvas.addEventListener("pointerdown", event => {
+  event.preventDefault();
+  handleTap(event.clientX, event.clientY);
+});
+canvas.addEventListener("contextmenu", event => event.preventDefault());
+window.addEventListener("resize", resize);
+
+resize();
+buildInitialBalls();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
