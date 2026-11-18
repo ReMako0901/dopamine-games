@@ -1,0 +1,349 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+  <title>IDLE NUMBER</title>
+  <style>
+    :root {
+      color-scheme: dark;
+    }
+
+    html,
+    body {
+      margin: 0;
+      height: 100%;
+      height: 100dvh;
+      background: #08080d;
+      overflow: hidden;
+      overscroll-behavior: none;
+      touch-action: none;
+      -webkit-user-select: none;
+      user-select: none;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    body {
+      display: grid;
+      place-items: center;
+    }
+
+    #number {
+      color: #f4f6ff;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: min(30vh, 24vw);
+      font-weight: 900;
+      line-height: 1;
+      text-align: center;
+      white-space: nowrap;
+      max-width: 96vw;
+      will-change: transform;
+    }
+
+    #number.milestone {
+      animation: number-milestone 0.32s ease-out;
+    }
+
+    @keyframes number-milestone {
+      0% {
+        transform: scale(1);
+      }
+      35% {
+        transform: scale(1.2);
+      }
+      70% {
+        transform: scale(0.95);
+      }
+      100% {
+        transform: scale(1);
+      }
+    }
+  </style>
+</head>
+<body>
+<div id="number">0</div>
+<script>
+"use strict";
+
+const STORAGE_KEY = "idle-number-state-v1";
+const SCALE = 1000000000n;
+const TICK_MS = 100;
+const SAVE_MS = 1000;
+const DOUBLE_TAP_MS = 320;
+
+const numberElement = document.getElementById("number");
+const measureCanvas = document.createElement("canvas");
+const measureContext = measureCanvas.getContext("2d");
+
+let number = 0n;
+let rate = SCALE;
+let growthClockMs = 0;
+let savedAt = Date.now();
+let lastTickAt = performance.now();
+let lastSaveAt = performance.now();
+let lastTapAt = -1;
+let milestone = 1n;
+
+function parsePositiveBigInt(value) {
+  if (typeof value !== "string" || !/^[0-9]+$/.test(value)) return null;
+  return BigInt(value);
+}
+
+function defaultState() {
+  return {
+    number: 0n,
+    rate: SCALE,
+    growthClock: 0,
+    savedAt: Date.now()
+  };
+}
+
+function loadState() {
+  let state = defaultState();
+
+  try {
+    const saved = JSON.parse(localStorage.getItem(STORAGE_KEY));
+    if (saved && typeof saved === "object") {
+      const savedNumber = parsePositiveBigInt(saved.number);
+      const savedRate = parsePositiveBigInt(saved.rate);
+      const savedClock = Number(saved.growthClock);
+      const savedAt = Number(saved.savedAt);
+
+      if (savedNumber !== null && savedRate !== null && savedRate > 0n &&
+          Number.isFinite(savedClock) && savedClock >= 0 && savedClock < 1 &&
+          Number.isFinite(savedAt)) {
+        const clockMs = Math.round(savedClock * 1000);
+        state = {
+          number: savedNumber,
+          rate: savedRate,
+          growthClock: clockMs / 1000,
+          savedAt
+        };
+      }
+    }
+  } catch (error) {
+    state = defaultState();
+  }
+
+  return state;
+}
+
+function formatWithCommas(value) {
+  const digits = value.toString();
+  const firstGroupLength = digits.length % 3;
+  let result = "";
+  let position = 0;
+
+  if (firstGroupLength !== 0) {
+    result = digits.slice(0, firstGroupLength);
+    position = firstGroupLength;
+  }
+
+  while (position < digits.length) {
+    if (result !== "") result += ",";
+    result += digits.slice(position, position + 3);
+    position += 3;
+  }
+
+  return result;
+}
+
+function powBigInt(base, exponent) {
+  let result = 1n;
+  let factor = base;
+  let remaining = exponent;
+
+  while (remaining > 0n) {
+    if ((remaining & 1n) !== 0n) result *= factor;
+    factor *= factor;
+    remaining >>= 1n;
+  }
+
+  return result;
+}
+
+function growRate(seconds) {
+  if (seconds <= 0) return;
+
+  const exponent = BigInt(Math.floor(seconds));
+  if (exponent === 0n) return;
+
+  const numerator = powBigInt(101n, exponent);
+  const denominator = powBigInt(100n, exponent);
+  rate = (rate * numerator + denominator / 2n) / denominator;
+}
+
+function multiplyRateBySeconds(seconds) {
+  if (!Number.isFinite(seconds) || seconds <= 0) return 0n;
+
+  const milliseconds = Math.round(seconds * 1000);
+  if (milliseconds <= 0) return 0n;
+
+  return rate * BigInt(milliseconds) / 1000n;
+}
+
+function processElapsed(seconds, approximate) {
+  if (!Number.isFinite(seconds) || seconds <= 0) return;
+
+  if (approximate) {
+    number += multiplyRateBySeconds(seconds);
+    const elapsedMs = Math.round(seconds * 1000);
+    const growthPhaseMs = growthClockMs + elapsedMs;
+    const crossings = Math.floor(growthPhaseMs / 1000);
+    growRate(crossings);
+    growthClockMs = growthPhaseMs % 1000;
+    return;
+  }
+
+  let remainingMs = Math.round(seconds * 1000);
+  while (remainingMs > 0) {
+    const nextGrowthMs = 1000 - growthClockMs;
+    const stepMs = Math.min(remainingMs, nextGrowthMs);
+    number += multiplyRateBySeconds(stepMs / 1000);
+    remainingMs -= stepMs;
+
+    if (stepMs === nextGrowthMs) {
+      growRate(1);
+      growthClockMs = 0;
+    } else {
+      growthClockMs += stepMs;
+    }
+  }
+}
+
+function nextPowerOfTen(value) {
+  let power = 1n;
+  while (power <= value) power *= 10n;
+  return power;
+}
+
+function triggerMilestone() {
+  numberElement.classList.remove("milestone");
+  void numberElement.offsetWidth;
+  numberElement.classList.add("milestone");
+
+  if (typeof navigator.vibrate === "function") {
+    navigator.vibrate(30);
+  }
+}
+
+function checkMilestone() {
+  const threshold = milestone * SCALE;
+  if (number <= threshold) return;
+
+  milestone = nextPowerOfTen(number / SCALE);
+  triggerMilestone();
+}
+
+function fitNumber(text) {
+  const maxWidth = Math.max(40, window.innerWidth * 0.96);
+  const maxHeight = Math.max(120, window.innerHeight * 0.3);
+  measureContext.font = '900 100px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+  const measuredWidth = Math.max(1, measureContext.measureText(text).width);
+  const measuredSize = 100 * maxWidth / measuredWidth;
+  const fontSize = Math.max(2, Math.floor(Math.min(measuredSize, maxHeight)));
+
+  numberElement.style.fontSize = `${fontSize}px`;
+}
+
+function render() {
+  const displayNumber = number / SCALE;
+  const text = formatWithCommas(displayNumber);
+
+  if (numberElement.textContent !== text) {
+    numberElement.textContent = text;
+    fitNumber(text);
+  }
+
+  checkMilestone();
+}
+
+function saveState() {
+  savedAt = Date.now();
+
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({
+      number: number.toString(),
+      rate: rate.toString(),
+      growthClock: growthClockMs / 1000,
+      savedAt
+    }));
+  } catch (error) {
+  }
+}
+
+function resetState() {
+  number = 0n;
+  rate = SCALE;
+  growthClockMs = 0;
+  milestone = 1n;
+  lastTapAt = -1;
+  numberElement.classList.remove("milestone");
+  render();
+  saveState();
+}
+
+function update() {
+  const now = performance.now();
+  const elapsed = (now - lastTickAt) / 1000;
+  lastTickAt = now;
+
+  if (elapsed > 0) {
+    processElapsed(elapsed, elapsed > 5);
+  }
+
+  render();
+
+  if (now - lastSaveAt >= SAVE_MS) {
+    lastSaveAt = now;
+    saveState();
+  }
+}
+
+window.addEventListener("pointerdown", function (event) {
+  event.preventDefault();
+  const now = performance.now();
+
+  if (lastTapAt >= 0 && now - lastTapAt <= DOUBLE_TAP_MS) {
+    resetState();
+    return;
+  }
+
+  lastTapAt = now;
+  number += rate * 5n;
+  render();
+  saveState();
+}, { passive: false });
+
+window.addEventListener("resize", function () {
+  fitNumber(numberElement.textContent || "0");
+});
+
+window.addEventListener("pagehide", saveState);
+document.addEventListener("visibilitychange", function () {
+  if (document.hidden) {
+    saveState();
+  } else {
+    update();
+  }
+});
+
+const initialState = loadState();
+number = initialState.number;
+rate = initialState.rate;
+growthClockMs = Math.round(initialState.growthClock * 1000);
+savedAt = initialState.savedAt;
+
+const offlineElapsed = Math.max(0, (Date.now() - savedAt) / 1000);
+if (offlineElapsed > 0) {
+  processElapsed(offlineElapsed, true);
+}
+
+savedAt = Date.now();
+lastTickAt = performance.now();
+lastSaveAt = lastTickAt;
+render();
+setInterval(update, TICK_MS);
+</script>
+</body>
+</html>
